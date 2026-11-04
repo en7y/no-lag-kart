@@ -53,6 +53,35 @@ XC = ['--msl', '--msl-version', '20300', '--msl-argument-buffers', '--msl-textur
 
 STORE = shader_cache.Store(os.environ.get('DMSH_CAS', os.path.join(cache_root, 'cas.db')))
 atexit.register(STORE.close)   # folds its log into the one file
+# Two game profile switches for Apple's M1 (game.tsv; shader_* keys are part of every shader's cache key). On the M1 Pro's compiler, a per-sample uniform branch (border_emu's dm_bs)
+# and the translator's NaN select on sample coordinates each keep a shader's samples from overlapping. Mario Kart World's cube prefilter (4744589bb8f9f7dd, 192 cube samples a pixel) took
+# 2.2 ms a chain as built and 0.67 ms with neither; with only one of them gone it was no faster (the branch kept: 2.1 ms) or slower (the select kept: 3.4 ms).
+#   shader_border_emu 0: no twin samplers. A sampler whose border colour Metal lacks keeps the nearest Metal colour; the host's "which Metal lacks" line names each one. Only for a game that
+#     never prints that line.
+#   shader_nan_coord fmax: the coordinate guard select(c, 0, isnan(c)) as fmax(c, -FLT_MAX) (see nan_coord_fmax)
+BORDER_EMU = GAME.get('shader_border_emu', '1') != '0'
+NAN_COORD_MODE = GAME.get('shader_nan_coord', 'select')   # select (as translated), fmax (every guard), cube (only cube and cube array samples: the 2D guards stay as dmsh_fetch.fold matches them)
+NAN_COORD_FMAX = NAN_COORD_MODE in ('fmax', 'cube')
+NAN_COORD = re.compile(r'select\((_\d+), (float[234])\(0\.0\), isnan\(\1\)\)')
+NAN_CUBE_TEX = re.compile(r'^\s*(?:texture|depth)cube(?:_array)?<[^>]*>\s+(\w+)\s*\[\[id\(', re.M)
+NAN_CUBE_USE = re.compile(r'spvDescriptorSet0\.(\w+)\.(?:sample|gather)\w*\([^,()]+, (?:(select\((_\d+), float[234]\(0\.0\), isnan\(\3\)\))|(_\d+)\b)')
+def nan_coord_fmax(msl, cube_only=False):
+    """The translator's guard on float texture coordinates, select(c, 0, isnan(c)) (vendored Ryujinx Instructions.cs, its only Select of an IsNan, so nothing else matches), made cheap
+    for the M1 (shader_nan_coord fmax). Apple's max returns the operand that is not NaN, in fast math too, so fmax(c, -FLT_MAX) turns a NaN into -FLT_MAX instead of 0: the same texel
+    through clamp-to-edge, repeat and mirrored repeat (2D, 3D, array layers), the whole border colour instead of half of it through clamp-to-border. A cube direction keeps no guard (a
+    cube array keeps it on its layer): any operation on the direction, fmax, fmin, precise::fmax, per component or not, cost a cube-array prefilter (765844f5609bb11b) as much as the
+    select (64x64 pass 1.96 ms, 0.26 ms without), and fmax would not keep the guard's face anyway (a NaN axis becomes the negative one). An exact form costs as much as the select
+    (fmax(c, 0) + fmin(c, 0): 5.5 ms a chain on 4744589bb8f9f7dd)"""
+    body = re.search(r'struct spvDescriptorSetBuffer0\s*\{(.*?)\};', msl, re.S)
+    cubes = set(NAN_CUBE_TEX.findall(body.group(1))) if body else set()
+    inline, temps = set(), set()   # guards that are a cube sample's coordinate argument; temporaries a cube sample takes its coordinates from
+    for m in NAN_CUBE_USE.finditer(msl) if cubes else ():
+        if m.group(1) not in cubes: continue
+        if m.group(2): inline.add(m.start(2))
+        else: temps.add(m.group(4))
+    def cube(v, ty): return f'float4({v}.xyz, fmax({v}.w, -FLT_MAX))' if ty == 'float4' else v   # a cube array's coordinates end with the layer
+    tmp = {m.start(2) for m in re.finditer(r'(_\d+) = (select\((_\d+), float[234]\(0\.0\), isnan\(\3\)\))', msl) if m.group(1) in temps}
+    return NAN_COORD.sub(lambda m: cube(m.group(1), m.group(2)) if m.start() in inline or m.start() in tmp else m.group(0) if cube_only else f'fmax({m.group(1)}, {m.group(2)}(-FLT_MAX))', msl)
 CAS_LOCKS, CAS_LOCKS_GUARD = {}, threading.Lock()
 PRE_STATS = collections.Counter()
 # -fpreserve-invariance: vertex positions are marked [[invariant]], but without this flag Metal does not promise that two different shaders compute the same expression to the same value; on Maxwell the same multiply-adds always agree.
@@ -767,7 +796,8 @@ def finish(key, w, j, c1):
     try: src = dmsh_reflect.pool_arrays(src)   # handles traced to no slot read the pools the replay keeps (see pool_arrays)
     except ValueError as e: return 'pool rewrite failed', str(e)[:160], None
     src = dmsh_wide.wide_loads(src)   # storage words the translator split, read whole again (see dmsh_wide.py)
-    src = dmsh_rewrite.border_emu(src)   # border colours Metal lacks (see border_emu)
+    if NAN_COORD_FMAX: src = nan_coord_fmax(src, NAN_COORD_MODE == 'cube')   # the profile's switch (see nan_coord_fmax)
+    if BORDER_EMU: src = dmsh_rewrite.border_emu(src)   # border colours Metal lacks (see border_emu); shader_border_emu 0 builds no twin samplers
     if j['stage'] == 'ps': src = dmsh_rewrite.frag_z_snap(src)[0]   # gl_FragCoord.z against a depth of its own surface (see frag_z_snap)
     blend0 = 0
     if j['stage'] == 'ps': src, blend0 = dmsh_rewrite.blend_zero(src)   # a zero blend weight makes 0 of a NaN colour, as NVIDIA's blender does; before the entry points that share main0's body (see blend_zero)
