@@ -6409,8 +6409,19 @@ static nvn_hmap g_treg_serial = {.klen = 8};   // serial → first registered de
 // The IDs registered with a texture of one memory pool, a list as by serial: a pool's Finalize marks them gone. It walked every registered ID for that, under g_rmu, which every
 // draw takes for its textures: 0.75 to 1.2 ms a pool with Mario Kart World's 131,329 IDs, to mark an ID or none, so while the game finalized 50 pools in a row the replay moved
 // one lock hand-over at a time, and that frame took 65 ms
+// An ID joins its pool's list behind the list's first one, so the table changes only when a list gets or loses its first ID, and the last pool asked for is remembered with
+// its first ID: registrations of one pool's textures in a row ask the table once (Age of Calamity registers a texture before every bind, about 21,000 a frame)
 static nvn_hmap g_treg_pool = {.klen = 8};   // memory pool object → first registered descriptor index + 1, under g_rmu
-static uint64_t g_treg_pool_seen;              // IDs a pool's Finalize looked at
+static uint64_t g_treg_pool_lk; static int g_treg_pool_lh;   // the last pool asked for (0: none) and its first ID + 1
+static uint64_t g_treg_pool_seen, g_treg_pool_asks;   // IDs a pool's Finalize looked at; lookups in the table
+static int treg_pool_first(uint64_t pk) {
+    if (g_treg_pool_lk != pk) { g_treg_pool_lk = pk; g_treg_pool_lh = (int)(uintptr_t)nvn_hm_get(&g_treg_pool, &pk); g_treg_pool_asks++; }
+    return g_treg_pool_lh;
+}
+static void treg_pool_set(uint64_t pk, int first) {
+    if (first) nvn_hm_put(&g_treg_pool, &pk, (void *)(uintptr_t)first); else nvn_hm_del(&g_treg_pool, &pk);
+    g_treg_pool_lk = pk; g_treg_pool_lh = first;
+}
 // Texture ID views are valid for an epoch (view_ser), not for every serial table change: ser_sync takes the notes (ser_note) and sends only the IDs registered with a noted serial
 // down the slow path; a change without a note starts a new epoch, which sends them all (what every g_ser_gen bump did before). A battle map in Fire Emblem: Fortune's Weave changes a
 // few serials a frame (the per-stage program ring in bind_stages among them), and each change made the next pool walk (pool_gpu) resolve all ~5,000 IDs again, 2 ms a frame.
@@ -6457,10 +6468,8 @@ static void treg_unlink(int id_) {   // out of its serial's list and out of its 
         r->prev = r->next = 0;
     }
     if (r->t.pool) {
-        uint64_t pk = (uint64_t)(uintptr_t)r->t.pool;
         if (r->pprev) g_treg[r->pprev - 1].pnext = r->pnext;
-        else if (r->pnext) nvn_hm_put(&g_treg_pool, &pk, (void *)(uintptr_t)r->pnext);
-        else nvn_hm_del(&g_treg_pool, &pk);
+        else treg_pool_set((uint64_t)(uintptr_t)r->t.pool, r->pnext);   // it was its pool's first
         if (r->pnext) g_treg[r->pnext - 1].pprev = r->pprev;
         r->pprev = r->pnext = 0;
     }
@@ -6651,7 +6660,7 @@ static void treg_drop_pool_views(const void *pool) {
     uint64_t pk = (uint64_t)(uintptr_t)pool;
     os_unfair_lock_lock(&g_rmu);
     vc_drop_pool(pool);
-    for (int k = (int)(uintptr_t)nvn_hm_get(&g_treg_pool, &pk); k; k = g_treg[k - 1].pnext) { g_treg_pool_seen++; treg_gone(&g_treg[k - 1]); }   // they stay registered, and listed
+    for (int k = treg_pool_first(pk); k; k = g_treg[k - 1].pnext) { g_treg_pool_seen++; treg_gone(&g_treg[k - 1]); }   // they stay registered, and listed
     os_unfair_lock_unlock(&g_rmu);
 }
 // Which texture IDs shaders read through a pool (dmsh_reflect.py pool_arrays): a bitmap the shaders set, one bit an ID, which the host folds into g_seen_done at each submission. A handle read from game
@@ -6697,11 +6706,10 @@ void mtl_reg_tex(int tid, const tex_t *t, const view_t *v) {
             if (rr->next) g_treg[rr->next - 1].prev = id_ + 1;
             nvn_hm_put(&g_treg_serial, &t->serial, (void *)(uintptr_t)(id_ + 1));
         }
-        if (t && t->pool) {
-            uint64_t pk = (uint64_t)(uintptr_t)t->pool;
-            rr->pprev = 0; rr->pnext = (int)(uintptr_t)nvn_hm_get(&g_treg_pool, &pk);
-            if (rr->pnext) g_treg[rr->pnext - 1].pprev = id_ + 1;
-            nvn_hm_put(&g_treg_pool, &pk, (void *)(uintptr_t)(id_ + 1));
+        if (t && t->pool) {   // behind its pool's first ID, or the first itself
+            uint64_t pk = (uint64_t)(uintptr_t)t->pool; int first = treg_pool_first(pk);
+            if (!first) { rr->pprev = rr->pnext = 0; treg_pool_set(pk, id_ + 1); }
+            else { treg_t *f = &g_treg[first - 1]; rr->pprev = first; rr->pnext = f->pnext; if (f->pnext) g_treg[f->pnext - 1].pprev = id_ + 1; f->pnext = id_ + 1; }
         }
         if (id_ < (1 << 20)) atomic_store_explicit(&g_tser[id_], t ? t->serial : 0, memory_order_release);
     }

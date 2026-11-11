@@ -117,6 +117,17 @@ int main(void) { @autoreleasepool {
         seen0 = g_treg_pool_seen; mtl_alias_drop_pool(&once);
         CHECK("an emptied ID is in no pool's list", g_treg_pool_seen == seen0);
     }
+    {   // registrations of one pool's textures in a row ask the table of the lists once, and once more when the list's first ID goes
+        static pool_t ring; tex_t t = {0}; t.pool = &ring; t.d.width = t.d.height = 4; enum { R0 = 1000, RN = 1000 };
+        uint64_t asks0 = g_treg_pool_asks;
+        for (int n = 0; n < 5 * RN; n++) { t.serial = serial++; mtl_reg_tex(R0 + n % RN, &t, NULL); }   // five times round a ring of 1,000 IDs, a new texture each time
+        CHECK("5,000 registrations of one pool's textures asked the table of the lists once", g_treg_pool_asks - asks0 == 1);
+        uint64_t seen0 = g_treg_pool_seen; mtl_alias_drop_pool(&ring);
+        CHECK("and the pool's Finalize finds the ring's 1,000 IDs", g_treg_pool_seen - seen0 == RN);
+        for (int n = 0; n < RN; n++) mtl_reg_tex(R0 + n, NULL, NULL);
+        seen0 = g_treg_pool_seen; mtl_alias_drop_pool(&ring);
+        CHECK("emptied, none", g_treg_pool_seen == seen0 && !nvn_hm_get(&g_treg_pool, &(uint64_t){(uint64_t)(uintptr_t)&ring}));
+    }
     {   // as many IDs as Mario Kart World's texture pool has, over 64 pools: a pool with no ID looks at none, a pool with three at three
         enum { BIG = 131072 }; static pool_t many[64], none, three; tex_t t = {0}; t.d.width = t.d.height = 4;
         for (int i = NID + 1; i < BIG; i++) { t.pool = &many[i % 64]; t.serial = serial++; mtl_reg_tex(i, &t, NULL); }
