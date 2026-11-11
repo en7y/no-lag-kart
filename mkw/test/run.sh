@@ -11,7 +11,7 @@ DUMP="${MKW_DUMP:-$ROOT/../MarioKartWorld}"
 B="${MKW_BUILD:-$DUMP/${ID}_build}"
 HOST="${HOST:-$B/tools/dmhost}"
 [ -x "$HOST" ] || { echo "no host at $HOST: run mkw/test/pack.sh first"; exit 1; }
-PATCHED=$(ls -d "$B"/patched_v* | sort -t v -k 2 -n | tail -1)
+PATCHED=$(ls -d "$B"/patched_v*[0-9] | sort -t v -k 2 -n | tail -1)   # the folder, not patched_v<n>.key beside it
 VER=${PATCHED##*patched_}
 PROF="$B/profile/$ID"; [ -f "$PROF/shader_map.tsv" ] || PROF="$ROOT/dm/games/$ID"
 mkdir -p "$B/run/save" "$B/run/temp" "$ROOT/mkw/logs"
