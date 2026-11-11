@@ -4780,6 +4780,19 @@ static struct { int on, lo, hi; } g_sm_plan;   // set by draw() for the pass rp_
 static int g_sm_pass, g_sm_lo, g_sm_hi, g_sm_cur, g_sm_applied;   // the open pass is slice-merged: its attachment holds layers lo..hi; cur: the layer the game's target names now; applied: the offset set on the encoder (-1 none)
 static uint64_t g_sm_npass, g_sm_ncont, g_sm_nwait;   // slice-merged passes, layer switches taken into them, draws that left one because their pipeline was not built yet
 static int g_pso_amp;   // pso_get: the pipeline of a slice-merged pass (sm_amp_get)
+// A plan that came to nothing: the pass a draw opened as slice-merged was ended by the next draw into the same layer, one that samples a texture the pass attaches
+// (draw_samples_rt), before any layer switch, so what one pass drew before took two. Mario Kart World draws the third round of its sky cube map's faces with two task / mesh
+// draws each, the second sampling a texture whose storage the cube map overlaps: five passes became nine. The opening draw (its target's texture, level and layer, its shaders)
+// gets no plan for the next SM_DUD_FRAMES frames, then it is tried again
+enum { SM_DUD_N = 32, SM_DUD_FRAMES = 600 };
+typedef struct { uint64_t ser; const void *fs, *vs; uint32_t level, layer; } sm_draw_id;   // vs: the vertex shader, or a task / mesh draw's mesh shader
+static struct { sm_draw_id d; uint64_t until; } g_sm_dud[SM_DUD_N]; static unsigned g_sm_dud_i; static uint64_t g_sm_nduds;
+static sm_draw_id g_sm_first; static int g_sm_first_alone;   // the opening draw of the pass planned last; alone: no switch to another layer taken in it yet
+static int sm_dud(const sm_draw_id *d) {
+    uint64_t f = atomic_load(&g_cur_frame);
+    for (int i = 0; i < SM_DUD_N; i++) if (g_sm_dud[i].until > f && !memcmp(&g_sm_dud[i].d, d, sizeof *d)) return 1;   // NOLINT(bugprone-suspicious-memory-comparison): no padding
+    return 0;
+}
 void mtl_sm_stats(uint64_t *np, uint64_t *nc, uint64_t *nw) { *np = g_sm_npass; *nc = g_sm_ncont; *nw = g_sm_nwait; }
 static id<MTLRenderPipelineState> g_enc_pso; static id<MTLDepthStencilState> g_enc_dss;   // Already set on this encoder (not set again if identical)
 // Dynamic state already sent on the open render encoder: each draw used to send all nine (stencil reference, viewport, scissor, cull, winding, fill, depth bias, depth clip, blend colour);
@@ -11964,11 +11977,11 @@ static int sm_scan(const uint8_t *p, const p_set_rt *rt, int cur, int *lo, int *
 }
 // The draw about to open a pass: plan it as slice-merged when its target is one layer of an array or cube texture level and the next targets switch to other layers of that level
 // (every layer between the lowest and the highest drawn into), and the draw's amplified pipeline is built (else it is queued, and this pass stays as it is).
-// mesh: a task / mesh draw (mesh_tasks_draw), whose pr is its pixel stage alone. Its native mesh pipeline takes the view mapping as a vertex pipeline does (mtk_amp_get), and
-// what its task and mesh shaders sample is looked up in the bound program
+// mesh: a task / mesh draw's mesh shader (mesh_tasks_draw), whose pr is its pixel stage alone. Its native mesh pipeline takes the view mapping as a vertex pipeline does
+// (mtk_amp_get), and what its task and mesh shaders sample is looked up in the bound program
 static int draw_samples_rt(NvProg *pr);
 static id<MTLRenderPipelineState> mtk_pso(NvProg *raster, int amp);
-static void sm_plan(NvProg *pr, int mesh) {
+static void sm_plan(NvProg *pr, NvShader *mesh) {
     g_sm_plan.on = 0;
     if (!pr || R.clear_d || R.clear_s) return;
     if (mesh ? draw_samples_rt(S.prog ? prog_get(S.prog) : nil) : !pr->sh[0] || pr->sh[0]->layer_out || draw_samples_rt(pr)) return;
@@ -11976,12 +11989,14 @@ static void sm_plan(NvProg *pr, int mesh) {
     int cur; if (!sm_rt_slice(&R.rt, &R.rt, &cur) || cur >= 64) return;
     id<MTLTexture> t = tex_mtl(R.rt.color[0]);
     if (!t || t.sampleCount != 1 || mtl_fmt_block(t.pixelFormat) || mtl_fmt_depth(t.pixelFormat) || (t.textureType != MTLTextureType2DArray && t.textureType != MTLTextureTypeCube && t.textureType != MTLTextureTypeCubeArray)) return;
+    sm_draw_id first = {R.rt.color[0]->serial, (__bridge const void *)pr->sh[1], (__bridge const void *)(mesh ? mesh : pr->sh[0]), (uint32_t)(R.rt.cview[0].set_levels ? R.rt.cview[0].base_level : 0), (uint32_t)cur};
+    if (sm_dud(&first)) return;   // planned before, and its next draw ended the pass at once
     int lo, hi; uint64_t mask; if (!sm_scan(g_exec_next, &R.rt, cur, &lo, &hi, &mask)) return;
     if (__builtin_popcountll(mask) != hi - lo + 1 || (NSUInteger)hi >= t.arrayLength * (t.textureType == MTLTextureType2DArray ? 1 : 6)) return;
     __typeof__(g_pass) keep = g_pass; memset(g_pass.cfmt, 0, sizeof g_pass.cfmt); g_pass.cfmt[0] = (uint32_t)t.pixelFormat; g_pass.dfmt = g_pass.sfmt = 0; g_pass.samples = 1;   // the key pso_get makes in the pass
     g_pso_amp = 1; id ps = mesh ? mtk_pso(pr, 1) : pso_get(pr, nil); g_pso_amp = 0; g_pass = keep;
     if (!ps) { g_sm_nwait++; return; }
-    g_sm_plan.on = 1; g_sm_plan.lo = lo; g_sm_plan.hi = hi;
+    g_sm_plan.on = 1; g_sm_plan.lo = lo; g_sm_plan.hi = hi; g_sm_first = first; g_sm_first_alone = 1;
 }
 // Experimental RT range candidate: only ignore positive nlevels differences not used by the actual render attachments; other fields stay word-for-word identical.
 #define NVN_RT_RANGE_IMPL 1
@@ -14165,9 +14180,12 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
     if (!g_enc) { g_fd_dw = dw; g_fd_di = di; }
     g_rp_layered = pr->sh[0] && pr->sh[0]->layer_out;
     if (g_enc && g_pass.layered != g_rp_layered) rp_end();   // a layered pass only for layer-writing vertex shaders (see rp_begin_ex)
-    if (g_enc && g_sm_pass && draw_samples_rt(g_mtk.on && S.prog ? prog_get(S.prog) : pr)) { PD("M %llu a draw in the slice-merged pass samples its attachment (reason %d, see g_dsr_why); split here", g_stat_pass, g_dsr_why); rp_end(); }   // a task / mesh draw: its task and mesh stages too
+    if (g_enc && g_sm_pass && draw_samples_rt(g_mtk.on && S.prog ? prog_get(S.prog) : pr)) { PD("M %llu a draw in the slice-merged pass samples its attachment (reason %d, see g_dsr_why); split here%s", g_stat_pass, g_dsr_why, g_sm_first_alone ? ", and no plan for its opening draw for a while" : "");
+        if (g_sm_first_alone) { g_sm_dud[g_sm_dud_i++ % SM_DUD_N] = (__typeof__(g_sm_dud[0])){g_sm_first, atomic_load(&g_cur_frame) + SM_DUD_FRAMES};
+            if (!g_sm_nduds++) MLOG("slice-merged pass: the pass planned at pass %llu was ended at once by its next draw, which samples a texture it attaches; that opening draw gets no plan for %d frames", g_stat_pass, SM_DUD_FRAMES); }
+        rp_end(); }   // a task / mesh draw: its task and mesh stages too
     if (g_enc && !defer_q_draw && long_pass_split_due()) { PD("M %llu %llu draws in this pass with the GPU idle: split here, the part so far submitted", g_stat_pass, (unsigned long long)(g_stat_draw - g_lps_draw0)); rp_end(); g_lps_splits++; g_cut_force = 1; sub_cut(); g_cut_force = 0; }
-    if (!g_enc && mode == 0 && !g_rp_layered && !defer_q_draw && g_exec_next && !tbdr_on() && (!g_geo_program || g_mtk.on) && sm_on()) sm_plan(pr, g_mtk.on);
+    if (!g_enc && mode == 0 && !g_rp_layered && !defer_q_draw && g_exec_next && !tbdr_on() && (!g_geo_program || g_mtk.on) && sm_on()) sm_plan(pr, g_mtk.on ? g_mtk.ms : nil);
     vbuf_prepare(pr->sh[0] ? &pr->sh[0]->rf : NULL, dw, di);   // an unaligned GPU-written stream, or one the draw reads past, needs its ordered copy before the render encoder
     id<MTLRenderCommandEncoder> en = rp_begin_ex(mode);
     g_rp_layered = 0; g_sm_plan.on = 0;
@@ -15552,7 +15570,7 @@ void mtl_exec(const uint8_t *p) {
                 // Do not continue a render pass opened only for a clear; one with fewer depth / stencil attachments can be continued (check the planes before drawing)
                 if (g_enc && g_enc_mode != 1 && !pend && R.has_rt && (tbdr_on() || (rtc_on() && r->n)) && rt_same(&R.rt, r)) { g_rt_merged = 1; if (!g_rt_merge_n++) MLOG("same-target continuation: first case pass %llu", g_stat_pass); PD("M %llu same-target continuation pass", g_stat_pass); R.rt = *r; break; }
                 if (g_enc && g_sm_pass && !pend && !g_game_barrier) { int sl;   // another layer of the slice-merged pass's level (sm_scan planned it)
-                    if (sm_rt_slice(&R.rt, r, &sl) && sl >= g_sm_lo && sl <= g_sm_hi) { R.rt = *r; g_sm_cur = sl; g_sm_ncont++;
+                    if (sm_rt_slice(&R.rt, r, &sl) && sl >= g_sm_lo && sl <= g_sm_hi) { R.rt = *r; g_sm_cur = sl; g_sm_ncont++; if ((uint32_t)sl != g_sm_first.layer) g_sm_first_alone = 0;
                         { void td_note_layer(id<MTLTexture>, uint64_t, NSUInteger, NSUInteger); td_note_layer(tex_mtl(r->color[0]), r->color[0]->serial, r->cview[0].set_levels ? r->cview[0].base_level : 0, (NSUInteger)sl); } PD("M %llu slice-merged pass goes on in layer %d", g_stat_pass, sl); break; } }
                 if (pend && !g_enc && g_cb && lc_on()) lc_push(); else rp_flush();   // clears with no draw wait for the next pass that attaches their targets (lc_push)
                 sub_cut(); R.rt = *r; R.has_rt = 1; break;

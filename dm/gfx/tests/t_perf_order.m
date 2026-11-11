@@ -120,7 +120,7 @@ static void slices(id<MTLLibrary> lib) {
     mtl_reg_tex(501,&t,NULL); S.tex[1][0]=501;
     p->sh[1]->rf.nb=1; p->sh[1]->rf.b[0]=(nvn_rbind){.kind=NVN_RB_TEX,.reg=0};
     chain next={0}; rt(&next,&t,1,NULL); triangle(&next); emit(&next,OP_END,NULL,0); g_exec_next=next.p;
-    sm_plan(p, 0); CHECK("first draw sampling attachment cannot start slice merge",!g_sm_plan.on);
+    sm_plan(p, nil); CHECK("first draw sampling attachment cannot start slice merge",!g_sm_plan.on);
     int kinds[]={NVN_RB_TEXU,NVN_RB_TEXD,NVN_RB_TEXA};
     for(unsigned i=0;i<sizeof kinds/sizeof *kinds;i++) {
         p->sh[1]->rf.b[0].kind=kinds[i];
@@ -226,6 +226,21 @@ static void slice_kinds(id<MTLLibrary> lib) {
       os_unfair_lock_lock(&g_sm_mamp_lock); g_sm_mamp_n = room; os_unfair_lock_unlock(&g_sm_mamp_lock);
       CHECK("the vertex draws merge and the mesh draws without an amplified pipeline stay apart", !sm_on() || (g_sm_ncont - before == 6 && g_sm_nwait > waits));
       CHECK("every layer holds its own mesh draw", layers_hold(&t, 6, num6)); }
+
+    // 6. two draws into each layer, the second one sampling the target's texture: it cannot draw in a pass that attaches the other layers, so it ends the slice-merged pass the
+    //    first draw opened and each layer takes two passes. The next time those opening draws get no plan (sm_dud) and each layer is one pass again
+    { tex_t t = texture(NVN_TEXTURE_TARGET_2D_ARRAY, NVN_FORMAT_RGBA8, 6); prog_t spg = {0}; NvProg *sp = make_program(lib, &spg, "red");
+      sp->sh[1]->rf.nb = 1; sp->sh[1]->rf.b[0] = (nvn_rbind){.kind = NVN_RB_TEX, .reg = 0};
+      chain c = {0}; for (int sl = 0; sl < 6; sl++) { rt(&c, &t, sl, NULL); bind(&c, &vpg, 3); triangle(&c); bind(&c, &spg, 3); triangle(&c); }
+      emit(&c, OP_END, NULL, 0);
+      uint64_t duds = g_sm_nduds, passes = g_sm_npass, total = g_stat_pass;
+      for (int round = 0; round < 2; round++) {
+          reset(); mtl_reg_tex(502, &t, NULL); S.tex[1][0] = 502; mtl_sub_begin(); mtl_exec(c.p);
+          uint64_t f = mtl_sub_commit(); CHECK("submission completes", mtl_wait(f, 2000000000ull)); mtl_drain(); CHECK("no GPU error", !mtl_last_commit_error());
+          if (!round) { amp_wait(); CHECK("a second draw that samples the target ends every plan at once (the last layer has none: nothing follows it)", !sm_on() || (g_sm_nduds - duds == 5 && g_sm_npass - passes == 5 && g_stat_pass - total == 11));
+              passes = g_sm_npass; total = g_stat_pass; }
+          else CHECK("the next time those draws get no plan: a pass for each layer", !sm_on() || (g_sm_npass == passes && g_stat_pass - total == 6));
+          CHECK("every pixel of all six layers is red", layers_hold(&t, 6, red6)); } }
 }
 static void hoists(id<MTLLibrary> lib) {
     prog_t pg={0}, cp={.serial=910000}; make_program(lib,&pg,"red");
