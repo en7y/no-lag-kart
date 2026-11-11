@@ -9,6 +9,8 @@ void svc_thread_dump(void) {}
 uint64_t now_ns(void) { return bp_now(); }
 
 static int checks, failed;
+// pipelines pso_build made: one specialization or MTLDevice pipeline each, or with whole pipelines (DM_PSO_WHOLE=1) one compiled, taken from the archive or made before
+static uint64_t builds(void) { return g_pb_spec + g_pb_legacy + g_pw_built + g_pw_archived + g_pw_reused; }
 #define EXPECT(name, want, got) do { uint64_t w_ = (want), g_ = (got); checks++; \
     if (w_ != g_) { fprintf(stderr, "%s: expected %llu, got %llu\n", name, (unsigned long long)w_, (unsigned long long)g_); failed++; } } while (0)
 
@@ -117,10 +119,10 @@ static void check_draw(const pso_key *raw, int merged, const uint8_t expected[4]
     pso_key live; pso_key_fill(&live, vs, fs, raw->cfmt, raw->dfmt, raw->sfmt, raw->samples, merged);
     if (merged) memcpy(live.lmap, raw->lmap, sizeof live.lmap);
     EXPECT("live key finds warmed pipeline", 1, hm_get_id(&g_pso, &live) != nil);
-    uint64_t before = g_pb_spec + g_pb_legacy;
+    uint64_t before = builds();
     NvProg *program = [NvProg new]; program->sh[0] = vs; program->sh[1] = fs;
     id<MTLRenderPipelineState> warmed = pso_get_(program, nil);
-    EXPECT("draw lookup adds no pipeline build", before, g_pb_spec + g_pb_legacy);
+    EXPECT("draw lookup adds no pipeline build", before, builds());
     EXPECT("draw lookup returns a pipeline", 1, warmed != nil);
     if (!warmed) { g_pso_lmap = NULL; return; }
     // Build the descriptor from the unnormalized historical state as a rendering oracle.
@@ -222,10 +224,10 @@ static void scenario(NSString *dir, int merged) {
     NSString *user = [NSString stringWithFormat:@"%@%@%@%@", r1, r0, row(&keys[2], merged), row(&keys[3], merged)];
     EXPECT("seed manifest written", 1, [seed writeToFile:a atomically:YES encoding:NSUTF8StringEncoding error:nil]);
     EXPECT("user manifest written", 1, [user writeToFile:b atomically:YES encoding:NSUTF8StringEncoding error:nil]);
-    uint64_t before = g_pb_spec + g_pb_legacy; g_warm_t0 = bp_now(); atomic_store(&g_warm_running, 1);
+    uint64_t before = builds(); g_warm_t0 = bp_now(); atomic_store(&g_warm_running, 1);
     long lines = 0; for (WarmTask *t in warm_parse(@[a, b], &lines)) warm_task(t);
     warm_finish();
-    EXPECT("only three effective pipelines compiled across both manifests", 3, g_pb_spec + g_pb_legacy - before);
+    EXPECT("only three effective pipelines compiled across both manifests", 3, builds() - before);
     EXPECT("only three render pipelines enqueued", 3, g_warm_rps);
     warm_claim();
     EXPECT("three warmed pipelines claimed into cache", 3, g_warm_claim_rps);
@@ -319,6 +321,7 @@ static void native_mesh(NSString *dir) {
 int main(void) { @autoreleasepool {
     alarm(60);   // A regression in owner/waiter progress must fail rather than hang the suite.
     setenv("DM_PSO_ARCHIVE", "off", 1); setenv("DM_NVN_PREDICT", "0", 1);
+    setenv("DM_PSO_WHOLE", "0", 0);   // bases unless the run asks for whole pipelines (check_t_pso_warm runs both), whatever the profile the test was built for says
     unsetenv("DM_NVN_HILITE"); unsetenv("DM_NVN_MAGSCAN"); unsetenv("DM_PSO_RECORD"); unsetenv("DM_PSO_USER"); unsetenv("DM_SAVE");
     char dir[] = "/tmp/t_pso_warm.XXXXXX"; if (!mkdtemp(dir)) return 1;
     mtl_init();

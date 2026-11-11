@@ -26,6 +26,7 @@ static int lib(NSString *dir, NSString *name, NSString *src) {   // <dir>/<name>
 static void reset_counts(void) { g_pre_done = g_pre_built = g_pre_archived = g_pre_skipped = g_pre_failed = 0; }
 
 int main(void) { @autoreleasepool {
+    setenv("DM_PSO_WHOLE", "0", 0);   // the bundle holds bases: these checks follow a base from it to a draw, whatever the profile the test was built for says
     char tmp[PATH_MAX]; snprintf(tmp, sizeof tmp, "%s/t_pso_bundle.XXXXXX", getenv("TMPDIR") ?: "/tmp"); if (!mkdtemp(tmp)) abort();
     NSString *root = @(tmp), *msl = [root stringByAppendingFormat:@"/msl/b-%s", DMSH_CHAIN], *tables = [root stringByAppendingPathComponent:@"tables"];
     NSString *bundle = [root stringByAppendingPathComponent:@"bundle"], *arch = [root stringByAppendingPathComponent:@"archive"];

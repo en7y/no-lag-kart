@@ -3,7 +3,7 @@
 // file serves the base again without compiling; a flush of bases without a vertex layout is a p<seq> file, where a base with a layout is not looked up; a function with no
 // Metal 4 descriptor keeps the MTLDevice path; pso_key_norm drops what no pipeline depends on; compaction merges the files the prewarm took bases from into one per full period despite a
 // mid-prewarm timer flush, removing them only after its last period, counting them for the prepare line, and a compaction that did not finish is not tried again on the same system build; a timer flush waits for any prewarm, so a cold start writes a file per full period; depth-only draws write depth; concurrent colour variants compile
-// one base; archive flushes preserve unrelated compiler state; a function with function constants is specialized by its pipeline's descriptor, not through its library,
+// one base; with whole pipelines (DM_PSO_WHOLE=1) each colour state is a pipeline of its own, kept in the archive as a base is, and a stand-in keeps its base; archive flushes preserve unrelated compiler state; a function with function constants is specialized by its pipeline's descriptor, not through its library,
 // and an MTLDevice pipeline gets it specialized; the descriptor for a specialization is the caller's whether the driver returns it retained or autoreleased; a compute pipeline is captured into a plain file and taken from it later, one without a Metal 4 descriptor never looked up; a native mesh pipeline is captured into a p file and taken from it later, with or without a task shader or a pixel shader, captured again by a compaction, and one without a Metal 4 descriptor built through the MTLDevice; a capture that fails builds the pipeline all the same and hands a full period over, or stops capturing after a failure in a period that captured nothing; run files are compacted by size tier from the pipeline count in their names (a tier of more than PSO_ARCH_COMPACT files and every smaller one, never a full period's, old and malformed names as the largest tier, the same across fresh processes), and a compute or task / mesh pipeline in a file left out is not captured again
 #include <stdlib.h>
 #include <string.h>
@@ -539,6 +539,7 @@ static void repeated_archive_miss(void) {
 }
 
 int main(int argc, char **argv) { @autoreleasepool {
+    setenv("DM_PSO_WHOLE", "0", 0);   // these checks count bases, whatever the profile the test was built for says; the whole-pipeline modes are run with DM_PSO_WHOLE=1
     if (!mkdtemp(archive_cache_root)) abort();
     atexit(archive_cache_cleanup);
     NSString *cache_path = [@(archive_cache_root) stringByAppendingPathComponent:@"com.apple.gpuarchiver"];
@@ -652,7 +653,68 @@ int main(int argc, char **argv) { @autoreleasepool {
         printf("t_pso_archive %s: %d checks, %d failed\n", argv[1], checks, failed);
         return failed != 0;
     }
-    if (argc == 3) {
+    if (argc == 3 && !strncmp(argv[1], "--whole-", 8)) {   // whole pipelines (DM_PSO_WHOLE=1) across fresh processes: compiled with their colour state and captured, then taken from the archive
+        int seed = !strcmp(argv[1], "--whole-seed");
+        pso4_init();
+        EXPECT("whole: on by DM_PSO_WHOLE", 1, pso_whole_all());
+        struct { MTLPixelFormat f0; int blend; MTLPixelFormat f1; MTLColorWriteMask m1; } c[3] = {
+            { MTLPixelFormatRGBA8Unorm, 1, MTLPixelFormatRGBA16Float, MTLColorWriteMaskAll }, { MTLPixelFormatRGBA16Float, 0, MTLPixelFormatRGBA8Unorm, MTLColorWriteMaskRed | MTLColorWriteMaskGreen },
+            { MTLPixelFormatRGBA8Unorm, 0, MTLPixelFormatRGBA8Unorm, MTLColorWriteMaskNone } };
+        // three colour states of one pair of functions: three pipelines, each drawing what the MTLDevice's draws, with no base and no specialization
+        for (int i = 0; i < 3; i++) same_pixels("whole pipeline", c[i].f0, c[i].blend, c[i].f1, c[i].m1);
+        EXPECT("whole: compiled in the first start", seed ? 3 : 0, g_pw_built);
+        EXPECT("whole: from the archive in the next", seed ? 0 : 3, g_pw_archived);
+        EXPECT("whole: no base", 0, g_pb_built + g_pb_archived + g_pb_reused);
+        EXPECT("whole: no specialization", 0, g_pb_spec);
+        EXPECT("whole: no MTLDevice pipeline", 0, g_pb_legacy);
+        // asked for again: the pipeline made, found by its descriptor
+        id<MTLRenderPipelineState> a = pso_build(desc(c[0].f0, c[0].blend, c[0].f1, c[0].m1, 1), 0, &err), b = pso_build(desc(c[0].f0, c[0].blend, c[0].f1, c[0].m1, 1), 0, &err);
+        EXPECT("whole: asked for again, the same pipeline", 1, a && a == b);
+        EXPECT("whole: asked for again, nothing made", 3, g_pw_built + g_pw_archived);
+        EXPECT("whole: asked for again, counted", 2, g_pw_reused);
+        // another depth format is the same pipeline, as it is the same base (a Metal 4 pipeline names none)
+        MTLRenderPipelineDescriptor *dd = desc(c[0].f0, c[0].blend, c[0].f1, c[0].m1, 1); dd.depthAttachmentPixelFormat = MTLPixelFormatDepth16Unorm;
+        EXPECT("whole: another depth format, the same pipeline", 1, pso_build(dd, 0, &err) == a);
+        // no compile allowed (a draw looking for its pipeline): none for one that is in no file, and nothing compiled; found once a file has it
+        MTLRenderPipelineDescriptor *nd = desc(MTLPixelFormatRGBA16Float, 1, MTLPixelFormatRGBA16Float, MTLColorWriteMaskBlue, 1);
+        uint64_t made = g_pw_built;
+        EXPECT("whole: a lookup alone finds what the archive has", !seed, pso_build_ex(nd, 0, &err, 0) != nil);
+        EXPECT("whole: a lookup compiles nothing", made, g_pw_built);
+        EXPECT("whole: looked for again", !seed, pso_build_ex(nd, 0, &err, 0) != nil);
+        EXPECT("whole: built when the caller may compile", 1, pso_build_ex(nd, 0, &err, 1) != nil);
+        EXPECT("whole: compiled once, in the first start", made + seed, g_pw_built);
+        // a stand-in (pso_desc_pull's label) keeps its base, which the prebuild makes: specialized, no whole pipeline
+        MTLRenderPipelineDescriptor *sd = desc(c[0].f0, c[0].blend, c[0].f1, c[0].m1, 1); sd.label = PSO_BASED;
+        uint64_t whole0 = g_pw_built + g_pw_archived + g_pw_reused;
+        EXPECT("whole: a stand-in's pipeline", 1, pso_build(sd, 0, &err) != nil);
+        EXPECT("whole: a stand-in's base compiled in the first start", seed, g_pb_built);
+        EXPECT("whole: a stand-in's base from the archive in the next", !seed, g_pb_archived);
+        EXPECT("whole: a stand-in is specialized", 1, g_pb_spec);
+        EXPECT("whole: a stand-in asks for no whole pipeline", whole0, g_pw_built + g_pw_archived + g_pw_reused);
+        // eight threads that want one pipeline: one of them makes it, the others wait for that one
+        uintptr_t seen[8] = {0}; uintptr_t *sp = seen; uint64_t made8 = g_pw_built + g_pw_archived;
+        dispatch_apply(8, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t i) {
+            @autoreleasepool { sp[i] = (uintptr_t)(__bridge void *)pso_build(desc(MTLPixelFormatRGBA16Float, 0, MTLPixelFormatRGBA16Float, MTLColorWriteMaskAlpha, 1), 0, NULL); }
+        });
+        int one = seen[0] != 0; for (int i = 1; i < 8; i++) one &= seen[i] == seen[0];
+        EXPECT("whole: eight threads, one pipeline", 1, one);
+        EXPECT("whole: eight threads, made once", made8 + 1, g_pw_built + g_pw_archived);
+        // a pipeline the compiler refuses whole is made from its base, and not compiled whole a second time (a float output meeting an integer attachment: pso_desc)
+        MTLRenderPipelineDescriptor *rd = desc(MTLPixelFormatRGBA8Uint, 0, MTLPixelFormatRGBA8Unorm, MTLColorWriteMaskAll, 1);
+        uint64_t refused0 = g_pw_built + g_pw_archived, based0 = g_pb_spec; err = nil;
+        id<MTLRenderPipelineState> rp = pso_build(rd, 0, &err);
+        if (g_pw_built + g_pw_archived == refused0) {   // refused here (a Metal that accepts it whole has nothing to fall back from)
+            EXPECT("whole: refused whole, made from its base", 1, rp != nil);
+            EXPECT("whole: refused whole, specialized", based0 + 1, g_pb_spec);
+            EXPECT("whole: refused whole, asked for again", 1, pso_build(rd, 0, &err) != nil);
+            EXPECT("whole: refused whole, no second whole compile", refused0, g_pw_built + g_pw_archived);
+        } else printf("t_pso_archive %s: this Metal builds a float output on an integer attachment whole, the fall-back to a base did not run\n", argv[1]);
+        arch_flush_wait();
+        [NSFileManager.defaultManager removeItemAtPath:@(dir) error:nil];
+        printf("t_pso_archive %s: %d checks, %d failed\n", argv[1], checks, failed);
+        return failed != 0;
+    }
+    if (argc == 3) {   // with DM_PSO_WHOLE=1 the nine are whole pipelines: the same files, the same compaction
         int seed = !strcmp(argv[1], "--compact-seed");
         pso4_init();
         EXPECT("restart: opened run archives", seed ? 0 : !strcmp(argv[1], "--compact-replay") ? PSO_ARCH_COMPACT + 1 : 1, g_arch4.count + g_arch_ixf.count);
@@ -677,8 +739,9 @@ int main(int argc, char **argv) { @autoreleasepool {
                 extra.vertexDescriptor.layouts[16].stride = 4096;
                 EXPECT("restart: fresh pipeline mixed with recaptures", 1, pso_build(extra, 0, &err) != nil);
             }
-            EXPECT("restart: every base from disk", PSO_ARCH_COMPACT + 1 + (fresh && !compacting), g_pb_archived);
-            EXPECT("restart: compiled bases", fresh && compacting, g_pb_built);
+            EXPECT("restart: every base from disk", PSO_ARCH_COMPACT + 1 + (fresh && !compacting), g_pb_archived + g_pw_archived);
+            EXPECT("restart: compiled bases", fresh && compacting, g_pb_built + g_pw_built);
+            EXPECT("restart: bases or whole pipelines, by the mode", 0, pso_whole_all() ? g_pb_archived + g_pb_built : g_pw_archived + g_pw_built);
             dispatch_sync(g_arch_q, ^{ arch_flush(); });
             if (g_compact_files) EXPECT("restart: timed flush keeps recaptures pending", PSO_ARCH_COMPACT + 1 + fresh, g_arch_new);
             atomic_store(&g_warm_running, 0);

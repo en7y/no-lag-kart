@@ -76,7 +76,8 @@ int main(void) { @autoreleasepool {
     k.blend[0] = (blend_st){.src_rgb=NVN_BLEND_FUNC_SRC1_COLOR, .dst_rgb=NVN_BLEND_FUNC_ONE, .src_a=NVN_BLEND_FUNC_ONE, .dst_a=NVN_BLEND_FUNC_ZERO, .eq_rgb=1, .eq_a=1};
     fs->rf.color_mask = 1; fs->rf.color_known = 0;
     CHECK(pso_desc(&k, vs, fs, nil, 0).colorAttachments[0].sourceRGBBlendFactor == bfac(k.blend[0].src_rgb), "unknown output map is preserved");
-    CHECK(g_pb_spec == 5, "all four factors and the dual-source pipeline exercised Metal 4 specialization");
+    // each a specialization of a base, or with whole pipelines (DM_PSO_WHOLE=1) one compiled with its blend state or made before
+    CHECK(g_pb_spec + g_pw_built + g_pw_reused == 5, "all four factors and the dual-source pipeline exercised the Metal 4 path");
     printf("missing secondary blend source: %d checks, %d failed\n", checks, failed);
     return failed != 0;
 } }

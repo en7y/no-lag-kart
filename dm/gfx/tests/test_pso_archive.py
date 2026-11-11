@@ -12,7 +12,7 @@ class ArchiveRestartTests(unittest.TestCase):
     def test_cold_start_then_next(self):
         with tempfile.TemporaryDirectory(prefix='pso-cold-') as folder:
             env = dict(os.environ, DM_PSO_MTL4='1', MTL_DEBUG_LAYER='1')
-            for name in ('DM_GPU_CAPTURE', 'MTL_CAPTURE_ENABLED', 'DM_TEST_ARCHIVE_CONSTANTS', 'DM_TEST_ARCHIVE_MIXED'):
+            for name in ('DM_GPU_CAPTURE', 'MTL_CAPTURE_ENABLED', 'DM_TEST_ARCHIVE_CONSTANTS', 'DM_TEST_ARCHIVE_MIXED', 'DM_PSO_WHOLE'):
                 env.pop(name, None)
             # nine new bases with a timer flush after each: a file per full period of 4 and one for the rest, which the next start does not compact
             for phase, files in (('seed', 3), ('next', 3)):
@@ -24,7 +24,7 @@ class ArchiveRestartTests(unittest.TestCase):
     def test_cold_start_cut_short(self):
         with tempfile.TemporaryDirectory(prefix='pso-cold-cut-') as folder:
             env = dict(os.environ, DM_PSO_MTL4='1', MTL_DEBUG_LAYER='1')
-            for name in ('DM_GPU_CAPTURE', 'MTL_CAPTURE_ENABLED', 'DM_TEST_ARCHIVE_CONSTANTS', 'DM_TEST_ARCHIVE_MIXED'):
+            for name in ('DM_GPU_CAPTURE', 'MTL_CAPTURE_ENABLED', 'DM_TEST_ARCHIVE_CONSTANTS', 'DM_TEST_ARCHIVE_MIXED', 'DM_PSO_WHOLE'):
                 env.pop(name, None)
             # ended in its prewarm after 6 new bases: the full period's file alone; the next start takes those 4 and builds the other 5
             for phase, files in (('cut-seed', 1), ('after-cut', 3)):
@@ -36,7 +36,7 @@ class ArchiveRestartTests(unittest.TestCase):
     def test_cold_start_quit(self):
         with tempfile.TemporaryDirectory(prefix='pso-cold-quit-') as folder:
             env = dict(os.environ, DM_PSO_MTL4='1', MTL_DEBUG_LAYER='1')
-            for name in ('DM_GPU_CAPTURE', 'MTL_CAPTURE_ENABLED', 'DM_TEST_ARCHIVE_CONSTANTS', 'DM_TEST_ARCHIVE_MIXED'):
+            for name in ('DM_GPU_CAPTURE', 'MTL_CAPTURE_ENABLED', 'DM_TEST_ARCHIVE_CONSTANTS', 'DM_TEST_ARCHIVE_MIXED', 'DM_PSO_WHOLE'):
                 env.pop(name, None)
             # quit in its prewarm after 6 new bases: the full period's file and one of the 2 after it; the next start takes all 6 and builds the other 3.
             # An earlier run's compaction marker stays
@@ -47,12 +47,26 @@ class ArchiveRestartTests(unittest.TestCase):
                 self.assertEqual(len(list(Path(folder).glob('*.mtl4a'))), files, phase)
                 self.assertTrue((Path(folder) / 'compacting').exists(), phase)
 
+    def test_whole_pipelines_then_next_start(self):
+        with tempfile.TemporaryDirectory(prefix='pso-whole-') as folder:
+            env = dict(os.environ, DM_PSO_MTL4='1', MTL_DEBUG_LAYER='1', DM_PSO_WHOLE='1')
+            for name in ('DM_GPU_CAPTURE', 'MTL_CAPTURE_ENABLED', 'DM_TEST_ARCHIVE_CONSTANTS', 'DM_TEST_ARCHIVE_MIXED'):
+                env.pop(name, None)
+            # five whole pipelines and a stand-in's base, compiled and captured into one file by the first start; the next takes all six from it and writes nothing
+            for phase in ('seed', 'next'):
+                result = subprocess.run([executable, '--whole-' + phase, folder],
+                                        env=env, capture_output=True, text=True, timeout=60)
+                self.assertEqual(result.returncode, 0, phase + '\n' + result.stdout + result.stderr)
+                self.assertEqual([path.name for path in Path(folder).glob('*.mtl4a')], ['00000-6.mtl4a'], phase)
+
     def test_compaction_with_fresh_bases_and_restart(self):
-        for constants in (False, True):
-            with self.subTest(constants=constants), tempfile.TemporaryDirectory(prefix='pso-restart-') as folder:
+        for constants, whole in ((False, False), (True, False), (False, True), (True, True)):
+            with self.subTest(constants=constants, whole=whole), tempfile.TemporaryDirectory(prefix='pso-restart-') as folder:
                 env = dict(os.environ, DM_PSO_MTL4='1', MTL_DEBUG_LAYER='1', DM_TEST_ARCHIVE_MIXED='1')
-                for name in ('DM_GPU_CAPTURE', 'MTL_CAPTURE_ENABLED', 'DM_TEST_ARCHIVE_CONSTANTS'):
+                for name in ('DM_GPU_CAPTURE', 'MTL_CAPTURE_ENABLED', 'DM_TEST_ARCHIVE_CONSTANTS', 'DM_PSO_WHOLE'):
                     env.pop(name, None)
+                if whole:   # the nine are whole pipelines (pso_whole_take): the same files and the same compaction as for bases
+                    env['DM_PSO_WHOLE'] = '1'
                 if constants:
                     env['DM_TEST_ARCHIVE_CONSTANTS'] = '1'
                 for phase, files in (('seed', 9), ('replay', 1), ('verify', 1)):
@@ -68,7 +82,7 @@ class ArchiveRestartTests(unittest.TestCase):
     def test_old_names_compacted_once(self):
         with tempfile.TemporaryDirectory(prefix='pso-oldname-') as folder:
             env = dict(os.environ, DM_PSO_MTL4='1', MTL_DEBUG_LAYER='1')
-            for name in ('DM_GPU_CAPTURE', 'MTL_CAPTURE_ENABLED', 'DM_TEST_ARCHIVE_CONSTANTS', 'DM_TEST_ARCHIVE_MIXED'):
+            for name in ('DM_GPU_CAPTURE', 'MTL_CAPTURE_ENABLED', 'DM_TEST_ARCHIVE_CONSTANTS', 'DM_TEST_ARCHIVE_MIXED', 'DM_PSO_WHOLE'):
                 env.pop(name, None)
             # nine files of one base, renamed as an archive from before the count; one compaction, then none
             for phase, files in (('seed', 9), ('replay', 1), ('verify', 1)):
@@ -84,7 +98,7 @@ class ArchiveRestartTests(unittest.TestCase):
     def test_tier_compaction_restart(self):
         with tempfile.TemporaryDirectory(prefix='pso-tier-') as folder:
             env = dict(os.environ, DM_PSO_MTL4='1', MTL_DEBUG_LAYER='1')
-            for name in ('DM_GPU_CAPTURE', 'MTL_CAPTURE_ENABLED', 'DM_TEST_ARCHIVE_CONSTANTS', 'DM_TEST_ARCHIVE_MIXED'):
+            for name in ('DM_GPU_CAPTURE', 'MTL_CAPTURE_ENABLED', 'DM_TEST_ARCHIVE_CONSTANTS', 'DM_TEST_ARCHIVE_MIXED', 'DM_PSO_WHOLE'):
                 env.pop(name, None)
             # a full period's file and nine of one base; the nine become a file per period of 4; then nothing to compact
             for phase, files in (('seed', 10), ('replay', 4), ('verify', 4)):

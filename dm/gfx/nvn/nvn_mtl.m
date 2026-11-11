@@ -8143,6 +8143,21 @@ static void lo_bind(id<MTLCommandEncoder> en) {
     enc_r_args((id<MTL4RenderCommandEncoder>)en, MTLRenderStageFragment, gpu, DMSH_LOGIC_BUFFER);
 }
 #define PSO_WHOLE @"built whole"   // pso_desc's label for pso_build_ex: no base, see there
+#define PSO_BASED @"specialized from its base"   // pso_desc_pull's label for pso_build_ex: a stand-in keeps its base when every other pipeline is built whole (pso_whole_all)
+// Whole pipelines (profile key pso_whole, DM_PSO_WHOLE=1 / 0): a draw's pipeline is compiled with its colour state (pixel formats, write masks, blending), not specialized from a base
+// that leaves them open. Apple on a specialized pipeline: its shared fragment body is not optimized for the attachments and jumps to a separate output part, an overhead that "is
+// usually small, but can be large in some fragment shaders", which are to be compiled with full state (WWDC 2025, session 254). Mario Kart World 1.8.0 has one: 4744589bb8f9f7dd
+// filters a cube map in six passes of one draw each (32x32 to 1x1, 6 colour attachments), 1.64 ms a frame specialized against 0.52 ms for its twin shader's same passes, and for its
+// own whole. On an M2 Pro a race's GPU time went 14.1 -> 12.4-12.9 ms and its late presents 39-48 -> 0.7-6 a minute, with no other pass changing. A whole pipeline lives in the
+// pipeline archive as a base does (its index key has the colour state, arch_key) and the prewarm builds it from its R line. On a miss a draw takes it from the archive, else draws
+// with its stand-in while the background builds it (hybrid pipelines: the pulling pipeline stays specialized from its base, which the prebuild made, so it never compiles), else
+// waits for it as it waited for a base. One the compiler refuses whole is made from its base (pso_build_ex)
+static int pso_whole_all(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("DM_PSO_WHOLE"); v = e ? !strcmp(e, "1") : DM_GAME_PSO_WHOLE;
+        MLOG("render pipelines: %s (profile key pso_whole, DM_PSO_WHOLE)", v ? "built whole, with their colour state" : "specialized from bases with open colour state"); }
+    return v;
+}
 static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvShader *fs, id<MTLFunction> fsfn, int merged) {
     MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
     d.vertexFunction = vs && vs->mesh_kind != 2 ? vs->fn : nil; d.fragmentFunction = fsfn ? fsfn : fs ? fs->fn : nil;   // mtk_pso copies the raster state only: a mesh function is not a vertex function
@@ -8857,7 +8872,7 @@ static void arch_write_file(ArchEpoch *ep) {
     if (!ok && keyed) unlink(kp.fileSystemRepresentation);
     if (!ok) { MLOG("[RED] pipeline archive: writing %s failed%s%s", path.UTF8String, e ? ": " : "", e ? e.localizedDescription.UTF8String : ""); unlink(tmp.fileSystemRepresentation); if (ep->compacting) g_compact_bad = 1; }
     else {
-        MLOG("pipeline archive: %d new pipeline bases%s%s written to %s (%.1f MB, %.0f ms)", n - cs - ms, cs ? [NSString stringWithFormat:@" and %d compute pipelines", cs].UTF8String : "",
+        MLOG("pipeline archive: %d new %s%s%s written to %s (%.1f MB, %.0f ms)", n - cs - ms, pso_whole_all() ? "render pipelines" : "pipeline bases", cs ? [NSString stringWithFormat:@" and %d compute pipelines", cs].UTF8String : "",
              ms ? [NSString stringWithFormat:@" and %d task / mesh pipelines", ms].UTF8String : "", path.lastPathComponent.UTF8String,
              [[NSFileManager.defaultManager attributesOfItemAtPath:path error:nil] fileSize] / 1048576.0, (bp_now() - t0) / 1e6);
     }
@@ -8984,6 +8999,75 @@ static MTL4RenderPipelineDescriptor *spec_desc(id base, _Atomic int *own) {   //
     return s;
 }
 static _Atomic int g_spec_own;
+// A whole pipeline (pso_whole_all), w its Metal 4 descriptor and d the MTLDevice one it was made from: made already, else from the archive, else compiled and captured for the
+// archive (compile 0: nil then). One for the process per pwhole_key, which is what it depends on: its base's key and its colour attachments. Draws whose keys differ only in
+// their depth and stencil formats share it as they share a base (a Metal 4 pipeline names neither), and two threads that want one never both compile it. g_pwhole: made;
+// g_pwhole_pending: being taken or built; g_pwhole_miss: looked for in the archive and not there; g_pwhole_bad: the compiler refused it, with its error (not compiled again:
+// pso_build_ex makes it from its base each time it is asked for). The same order of steps as a base's in pso_build_ex, with the compacting prewarm's second capture (#342)
+typedef struct { pbase_key b; uint32_t c[8][9]; } pwhole_key;   // c: each colour attachment's format, write mask, blend enable, and its six blend factors and operations (pso_col4's order)
+static void pwhole_key_of(MTLRenderPipelineDescriptor *d, int off, pwhole_key *k) {
+    memset(k, 0, sizeof *k); pbase_key_of(d, off, &k->b);
+    for (int i = 0; i < 8; i++) {
+        MTLRenderPipelineColorAttachmentDescriptor *c = d.colorAttachments[i]; uint32_t *v = k->c[i];
+        v[0] = (uint32_t)c.pixelFormat; v[1] = (uint32_t)c.writeMask; v[2] = c.blendingEnabled; v[3] = (uint32_t)c.sourceRGBBlendFactor; v[4] = (uint32_t)c.destinationRGBBlendFactor;
+        v[5] = (uint32_t)c.rgbBlendOperation; v[6] = (uint32_t)c.sourceAlphaBlendFactor; v[7] = (uint32_t)c.destinationAlphaBlendFactor; v[8] = (uint32_t)c.alphaBlendOperation;
+    }
+}
+static nvn_hmap g_pwhole = {.klen = sizeof(pwhole_key)}, g_pwhole_pending = {.klen = sizeof(pwhole_key)}, g_pwhole_miss = {.klen = sizeof(pwhole_key)}, g_pwhole_bad = {.klen = sizeof(pwhole_key)};
+static os_unfair_lock g_pwhole_lock = OS_UNFAIR_LOCK_INIT;
+static _Atomic uint64_t g_pw_built, g_pw_archived, g_pw_reused;   // whole pipelines compiled, taken from the archive, asked for again
+static id<MTLRenderPipelineState> pso_whole_take(MTL4RenderPipelineDescriptor *w, MTLRenderPipelineDescriptor *d, int off, int compile, NSError **e) {
+    pwhole_key wk; pwhole_key_of(d, off, &wk);
+    int vd = 0; for (int i = 0; i < 31 && !vd; i++) vd = wk.b.va[i][0] != 0;   // a vertex layout (MTLVertexFormatInvalid is 0)
+    id<MTLRenderPipelineState> ps = nil; PbaseBuild *job = nil; int owner = 0, known = 0;
+    for (;;) {
+        os_unfair_lock_lock(&g_pwhole_lock);
+        ps = hm_get_id(&g_pwhole, &wk); job = nil; owner = 0; known = 0;
+        if (!ps) {
+            id bad = hm_get_id(&g_pwhole_bad, &wk);
+            if (bad) { os_unfair_lock_unlock(&g_pwhole_lock); if (compile && e && bad != NSNull.null) *e = bad; return nil; }
+            known = hm_get_id(&g_pwhole_miss, &wk) != nil;
+            if (known && !compile) { os_unfair_lock_unlock(&g_pwhole_lock); return nil; }
+            job = hm_get_id(&g_pwhole_pending, &wk);
+            if (!job) { job = [PbaseBuild new]; job->done = dispatch_group_create(); dispatch_group_enter(job->done); hm_put_id(&g_pwhole_pending, &wk, job); owner = 1; }
+        }
+        os_unfair_lock_unlock(&g_pwhole_lock);
+        if (!job || owner) break;
+        if (!compile) return nil;   // another thread is taking or building it: no wait for the Metal compiler
+        dispatch_group_wait(job->done, DISPATCH_TIME_FOREVER); ps = job->ps;
+        if (ps) break;
+        if (job->compiled) { if (e) *e = job->error; return nil; }
+        // its owner only looked in the archive (compile 0) and found none: build it here
+    }
+    if (ps) { g_pw_reused++; return ps; }
+    uint64_t t0 = bp_now(); int from_run = 0, compiled = 0; NSError *be = nil;
+    ps = known ? nil : arch_lookup(w, vd, &from_run);
+    uint64_t t1 = bp_now();
+    if (ps) { g_pw_archived++; g_pt_hit_n++; g_pt_hit_ns += t1 - t0; }
+    if (ps && from_run && g_compact_enabled && atomic_load(&g_warm_running)) {   // as a base from a run file the compaction replaces
+        int cap = 0; id<MTLRenderPipelineState> cb = arch_capturing() ? arch_capture(w, nil, vd, &cap) : nil;
+        g_compact_ns += bp_now() - t1;
+        if (cb) ps = cb;
+        if (cap) { g_compacted++; g_compact_bases++; } else g_compact_bad = 1;
+    }
+    if (!ps) {
+        if (!known && g_arch4.count + g_arch4p.count) { g_pt_miss_n++; g_pt_miss_ns += t1 - t0; }
+        if (compile) {
+            ps = arch_capture(w, &be, vd, NULL); compiled = 1;
+            g_pt_comp_ns += bp_now() - t1;
+            if (ps) { g_pw_built++; if (g_arch_cap) arch_note_new(); }
+        }
+    }
+    os_unfair_lock_lock(&g_pwhole_lock);
+    job->ps = ps; job->error = be; job->compiled = compiled;
+    if (ps) hm_put_id(&g_pwhole, &wk, ps);
+    else if (compiled) hm_put_id(&g_pwhole_bad, &wk, be ? (id)be : (id)NSNull.null);
+    else if (!known) hm_put_id(&g_pwhole_miss, &wk, NSNull.null);   // searched and not there
+    hm_rel(nvn_hm_del(&g_pwhole_pending, &wk)); dispatch_group_leave(job->done);
+    os_unfair_lock_unlock(&g_pwhole_lock);
+    if (!ps && compile && e) *e = be;
+    return ps;   // NOLINT(clang-analyzer-osx.cocoa.RetainCount): job stays in g_pwhole_pending (hm_put_id's CFBridgingRetain) until hm_rel releases it, not a leak
+}
 // The pipeline pso_desc describes: its base (built, from the archive or already made), then specialized with its colour state. Called on several threads.
 // compile 0: nil on an archive miss (*e untouched), with no MTLDevice fallback. Prewarm compaction may still refresh a found base for serialization.
 static id<MTLRenderPipelineState> pso_build_ex(MTLRenderPipelineDescriptor *d, int off, NSError **e, int compile) {
@@ -9000,9 +9084,17 @@ static id<MTLRenderPipelineState> pso_build_ex(MTLRenderPipelineDescriptor *d, i
     // A pipeline specialized from a base with open colour state gives its fragment function 0 for [[primitive_id]], where one built whole gives the real IDs (macOS 27.2, Apple M6: 4 triangles of a draw
     // counted per ID, 16384 0 0 0 against 4096 each, whatever the vertex function). So a fragment shader that reads the ID gets a whole pipeline, with no base to share. Fire Emblem Fortune's Weave's
     // ambient occlusion draws 4 triangles and writes the array layer of each one's primitive ID: every one wrote layer 0, so 3 pixels in 4 had no sun light. A platform limit: the ID has no other source
-    if (rast && g_comp4 && [d.label isEqualToString:PSO_WHOLE]) {
+    int whole_all = rast && g_comp4 && ![d.label isEqualToString:PSO_BASED] && pso_whole_all();
+    if (rast && g_comp4 && ([d.label isEqualToString:PSO_WHOLE] || whole_all)) {
         MTL4RenderPipelineDescriptor *whole = pso_desc4(d, 0, off);
-        if (whole) { if (!compile) return nil; return [g_comp4 newRenderPipelineStateWithDescriptor:whole compilerTaskOptions:nil error:e]; }
+        if (whole && whole_all) {   // kept in the archive, as every pipeline is then
+            NSError *we = nil; id<MTLRenderPipelineState> ps = pso_whole_take(whole, d, off, compile, &we);
+            if (ps || !compile || [d.label isEqualToString:PSO_WHOLE]) { if (!ps && compile && e) *e = we; return ps; }
+            // Metal refused it whole. It checks a whole pipeline's outputs against its attachments where it checks nothing for a base (pso_desc: a float output meeting an
+            // integer attachment), so this one is made from its base as without the key, and draws what it drew then
+            static _Atomic int said;
+            if (atomic_fetch_add(&said, 1) < 8) MLOG("whole pipeline refused (%s): specialized from its base instead", we.localizedDescription.UTF8String ?: "no error given");
+        } else if (whole) { if (!compile) return nil; return [g_comp4 newRenderPipelineStateWithDescriptor:whole compilerTaskOptions:nil error:e]; }
     }
     MTL4RenderPipelineDescriptor *b = g_comp4 ? pso_desc4(d, rast, off) : nil;   // with rasterization off there is no colour state to leave open: the base is the pipeline
     if (!b) { if (!compile) return nil; g_pb_legacy++; return pso_build_dev(d, off, e); }
@@ -9196,6 +9288,7 @@ static MTLRenderPipelineDescriptor *pso_desc_pull(const pso_key *k, NvShader *vs
     id<MTLFunction> pf = pull_fn(vs); if (!pf) return nil;
     MTLRenderPipelineDescriptor *d = pso_desc(k, vs, fs, nil, 0);
     d.vertexFunction = pf; d.vertexDescriptor = [MTLVertexDescriptor vertexDescriptor];
+    if (![d.label isEqualToString:PSO_WHOLE]) d.label = PSO_BASED;   // a stand-in must not compile: its base is made by the prebuild (a fragment that reads the primitive ID has none, as before)
     return d;
 }
 static __unsafe_unretained id<MTLRenderPipelineState> hybrid_get(const pso_key *k, NvShader *vs, NvShader *fs) {
@@ -9217,12 +9310,13 @@ static __unsafe_unretained id<MTLRenderPipelineState> hybrid_get(const pso_key *
 void mtl_hybrid_stats(uint64_t *draws, uint64_t *made, uint64_t *none) { *draws = g_hy_draws; *made = g_hy_made; *none = g_hy_none; }
 // The pipeline time line of the timing summary (hle_nvn.c), the difference since the last call
 void mtl_pso_line(char *o, size_t n) {
-    static uint64_t p[18]; uint64_t v[18] = {g_bp_pso_ns, g_bp_lib_ns, g_pt_hit_n, g_pt_hit_ns, g_pt_miss_n, g_pt_miss_ns, g_pb_spec, g_pt_spec_ns, g_pb_built, g_pt_comp_ns, g_pt_pred_n, g_pt_pred_ns, g_hy_draws, g_hy_made, g_pp_kicked, g_pp_done_n, g_pp_stolen, g_hy_none};
-    uint64_t d[18]; for (int i = 0; i < 18; i++) d[i] = v[i] - p[i];
+    static uint64_t p[21]; uint64_t v[21] = {g_bp_pso_ns, g_bp_lib_ns, g_pt_hit_n, g_pt_hit_ns, g_pt_miss_n, g_pt_miss_ns, g_pb_spec, g_pt_spec_ns, g_pb_built, g_pt_comp_ns, g_pt_pred_n, g_pt_pred_ns, g_hy_draws, g_hy_made, g_pp_kicked, g_pp_done_n, g_pp_stolen, g_hy_none,
+                                             g_pw_built, g_pw_archived, g_pw_reused};
+    uint64_t d[21]; for (int i = 0; i < 21; i++) d[i] = v[i] - p[i];
     snprintf(o, n, "on the submit thread pipelines %.1f ms, shader libraries %.1f ms, predictions %llu / %.1f ms; all threads: archive lookups found %llu / %.1f ms, found none %llu / %.1f ms, "
-             "specializations %llu / %.1f ms, bases compiled %llu / %.1f ms; draws with a hybrid pipeline %llu (%llu pulling pipelines made, %llu misses with no pulling base ready); background builds kicked %llu, done %llu, made by the draw %llu, in flight %llu",
+             "specializations %llu / %.1f ms, bases compiled %llu / %.1f ms, whole pipelines compiled %llu, taken from the archive %llu, asked for again %llu; draws with a hybrid pipeline %llu (%llu pulling pipelines made, %llu misses with no pulling base ready); background builds kicked %llu, done %llu, made by the draw %llu, in flight %llu",
              d[0] / 1e6, d[1] / 1e6, (unsigned long long)d[10], d[11] / 1e6, (unsigned long long)d[2], d[3] / 1e6, (unsigned long long)d[4], d[5] / 1e6, (unsigned long long)d[6], d[7] / 1e6,
-             (unsigned long long)d[8], d[9] / 1e6, (unsigned long long)d[12], (unsigned long long)d[13], (unsigned long long)d[17], (unsigned long long)d[14], (unsigned long long)d[15], (unsigned long long)d[16], (unsigned long long)(v[14] - v[15] - v[16]));
+             (unsigned long long)d[8], d[9] / 1e6, (unsigned long long)d[18], (unsigned long long)d[19], (unsigned long long)d[20], (unsigned long long)d[12], (unsigned long long)d[13], (unsigned long long)d[17], (unsigned long long)d[14], (unsigned long long)d[15], (unsigned long long)d[16], (unsigned long long)(v[14] - v[15] - v[16]));
     memcpy(p, v, sizeof p);
     static uint64_t pn[5], pns[5]; size_t o2 = strlen(o);
     o2 += snprintf(o + o2, n > o2 ? n - o2 : 0, "; draws that waited:");
@@ -9757,9 +9851,11 @@ static void warm_finish(void) {
                          (unsigned long long)g_warm_mps, (unsigned long long)g_mtk_arch, (unsigned long long)g_mtk_built, (unsigned long long)g_mtk_dev);
     char again[96] = "";   // only a compacting start captures bases again
     if (g_compact_enabled) snprintf(again, sizeof again, " (%d of them captured again for the compaction, %.1f ms)", (int)g_compact_bases, g_compact_ns / 1e6);
-    if (g_comp4) MLOG("pipeline bases so far: %llu compiled, %llu from the archive%s, %llu reused (%.1f ms for the bases); %llu specializations (their descriptors %s), %llu pipelines without a base (MTLDevice)",
+    char wsofar[160] = "";
+    if (pso_whole_all()) snprintf(wsofar, sizeof wsofar, "; whole pipelines: %llu compiled, %llu from the archive, %llu asked for again", (unsigned long long)g_pw_built, (unsigned long long)g_pw_archived, (unsigned long long)g_pw_reused);
+    if (g_comp4) MLOG("pipeline bases so far: %llu compiled, %llu from the archive%s, %llu reused (%.1f ms for the bases); %llu specializations (their descriptors %s), %llu pipelines without a base (MTLDevice)%s",
                       (unsigned long long)g_pb_built, (unsigned long long)g_pb_archived, again, (unsigned long long)g_pb_reused, g_pb_base_ns / 1e6, (unsigned long long)g_pb_spec,
-                      (const char *[]){"not asked for yet", "returned retained", "returned autoreleased"}[atomic_load(&g_spec_own) % 3], (unsigned long long)g_pb_legacy);
+                      (const char *[]){"not asked for yet", "returned retained", "returned autoreleased"}[atomic_load(&g_spec_own) % 3], (unsigned long long)g_pb_legacy, wsofar);
     if (g_arch_bundle || g_arch_cap) MLOG("compute pipelines so far: %llu from the archive bundled with the app, %llu from this device's archive, %llu built (%.1f ms looking up, %.1f ms building)",
                                          (unsigned long long)g_cps_arch, (unsigned long long)g_cps_run, (unsigned long long)g_cps_built, g_cps_look_ns / 1e6, g_cps_build_ns / 1e6);
     // All warm tasks have joined. WarmItems retain published shaders until the submit thread claims them.
@@ -9800,7 +9896,7 @@ static int prepare_workers(void) {
 }
 static void warm_prepare(NSArray<WarmTask *> *tasks, long lines) {
     int workers = prepare_workers(); long n = (long)tasks.count;
-    uint64_t t0 = bp_now(), built0 = g_pb_built, arch0 = g_pb_archived, reused0 = g_pb_reused, spec0 = g_pb_spec;
+    uint64_t t0 = bp_now(), built0 = g_pb_built, arch0 = g_pb_archived, reused0 = g_pb_reused, spec0 = g_pb_spec, wbuilt0 = g_pw_built, warch0 = g_pw_archived, wagain0 = g_pw_reused;
     __block _Atomic long next = 0;
     dispatch_group_t g = dispatch_group_create();
     for (int w = 0; w < workers; w++) dispatch_group_async(g, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -9816,10 +9912,13 @@ static void warm_prepare(NSArray<WarmTask *> *tasks, long lines) {
     if (shown) front_progress(NULL, lines, lines);
     char again[64] = "";   // only a compacting start captures bases again
     if (g_compact_enabled) snprintf(again, sizeof again, " (%d of them captured again for the compaction)", (int)g_compact_bases);
+    char whole[160] = "";   // with whole pipelines the lines' pipelines are these, and the bases are stand-ins' only
+    if (pso_whole_all()) snprintf(whole, sizeof whole, "; whole pipelines %llu compiled, %llu from the archive, %llu asked for again", (unsigned long long)(g_pw_built - wbuilt0),
+                                  (unsigned long long)(g_pw_archived - warch0), (unsigned long long)(g_pw_reused - wagain0));
     MLOG("pipeline prepare: %ld lines (%llu shaders, %llu render pipelines, %llu compute pipelines) in %.2f s on %d workers before the first frame, progress screen %s; "
-         "bases %llu compiled, %llu from the archive%s, %llu reused; %llu specializations",
+         "bases %llu compiled, %llu from the archive%s, %llu reused; %llu specializations%s",
          lines, (unsigned long long)g_warm_shaders, (unsigned long long)g_warm_rps, (unsigned long long)g_warm_cps, (bp_now() - t0) / 1e9, workers, shown ? "shown" : "not shown",
-         (unsigned long long)(g_pb_built - built0), (unsigned long long)(g_pb_archived - arch0), again, (unsigned long long)(g_pb_reused - reused0), (unsigned long long)(g_pb_spec - spec0));
+         (unsigned long long)(g_pb_built - built0), (unsigned long long)(g_pb_archived - arch0), again, (unsigned long long)(g_pb_reused - reused0), (unsigned long long)(g_pb_spec - spec0), whole);
 }
 // The prebuild in the prepare step: the bases of every shader pair are made before the game's first frame, behind the progress screen ("Preparing pipelines"), once per chain
 // version, depth mode and pair list (prebuilt.tsv), so a running game never compiles them meanwhile. Built in the background while playing, they took an iPhone 17 Pro Max's GPU
@@ -11621,7 +11720,13 @@ static nvn_hmap g_pp_easy = {.klen = sizeof(pso_key)};
 static int pso_base_made(const pso_key *k, NvShader *vs, NvShader *fs) {
     pso4_init(); if (!g_comp4) return 0;
     MTLRenderPipelineDescriptor *d = pso_desc(k, vs, fs, nil, 0);
-    if ([d.label isEqualToString:PSO_WHOLE] || !pso_ds_valid((uint32_t)d.depthAttachmentPixelFormat, (uint32_t)d.stencilAttachmentPixelFormat)) return 0;
+    if (!pso_ds_valid((uint32_t)d.depthAttachmentPixelFormat, (uint32_t)d.stencilAttachmentPixelFormat)) return 0;
+    if (d.rasterizationEnabled && pso_whole_all()) {   // whole pipelines: the one of its descriptor is made (pso_whole_take), whichever key asked for it. With rasterization off the base is the pipeline, as below
+        pwhole_key wk; pwhole_key_of(d, !k->border, &wk);
+        os_unfair_lock_lock(&g_pwhole_lock); int made = hm_get_id(&g_pwhole, &wk) != nil; os_unfair_lock_unlock(&g_pwhole_lock);
+        return made;
+    }
+    if ([d.label isEqualToString:PSO_WHOLE]) return 0;
     pbase_key bk; pbase_key_of(d, !k->border, &bk);
     os_unfair_lock_lock(&g_pbase_lock); int made = hm_get_id(&g_pbase, &bk) != nil; os_unfair_lock_unlock(&g_pbase_lock);
     return made;
