@@ -17,12 +17,31 @@ ENVF="${BENCH_ENV-$ROOT/mkw/env-m2pro-16gb.txt}"
 pmset -g batt | grep -q "AC Power" || echo "warning: on battery, the numbers will be lower and less steady"
 # The game stays in focus whichever app is active (DM_FOCUS_KEEP), so a click elsewhere does not pause it; BENCH_TOP=1 also keeps its window above the others without
 # activating it, as scripts/regress.py does (a window that is not the active app's got no display ticks for half a second at a time here: leave it off to measure).
-# Every run takes the build's own pipeline archive and this Mac's prewarm list (<build>/run), so no run compiles what an earlier one already met.
-set -- "$BUILD" --lock /tmp/mkw-measure.lock --env DM_FOCUS_KEEP=1 --pso-archive "$BUILD/run/pso_archive" --env "DM_PSO_USER=$BUILD/run/pso_user.tsv" "$@"
+# Every run takes the build's pipeline archive and this Mac's prewarm list (<build>/run), so no run compiles what play has already met. By default the runs of one
+# invocation share a copy of the two (APFS clones, no disk space until they change; removed at the end): what a run adds does not reach the game's own files, and
+# every invocation starts from the same state. BENCH_STATE=shared takes the game's own files in place, for a warm-up run whose pipelines should stay.
+STATE="$BUILD/run"
+if [ "${BENCH_STATE:-clone}" = clone ]; then
+  STATE="$BUILD/bench/.state.$$"; rm -rf "$STATE"; mkdir -p "$STATE"
+  cp -cR "$BUILD/run/pso_archive" "$STATE/pso_archive"; [ ! -f "$BUILD/run/pso_user.tsv" ] || cp -c "$BUILD/run/pso_user.tsv" "$STATE/pso_user.tsv"
+  rm -f "$STATE/pso_archive/compacting"
+fi
+set -- "$BUILD" --lock /tmp/mkw-measure.lock --env DM_FOCUS_KEEP=1 --pso-archive "$STATE/pso_archive" --env "DM_PSO_USER=$STATE/pso_user.tsv" "$@"
 [ -z "${BENCH_TOP:-}" ] || set -- "$@" --env DM_WINDOW_TOP=1
 if [ -n "$ENVF" ] && [ -f "$ENVF" ]; then
   while IFS= read -r l; do case "$l" in ''|\#*) ;; *) set -- "$@" --env "$l";; esac; done < "$ENVF"
 fi
 "$ROOT/mkw/test/watchdog.sh" & WD=$!
-trap 'kill $WD 2>/dev/null' EXIT INT TERM
-caffeinate -dim "$PY" "$ROOT/scripts/bench.py" "$@"
+trap 'kill $WD 2>/dev/null; [ "$STATE" = "$BUILD/run" ] || rm -rf "$STATE"' EXIT INT TERM
+# A display that sleeps (or a screen saver) covers the window: macOS then calls the game's display link about once a second, the host presents without it, and the frame
+# times of that run measure nothing. caffeinate -d keeps the display from sleeping but does not wake one that sleeps already, so wake it first (-u: as if the user did
+# something; no password while the lock delay has not passed), and name every run whose window was covered at any time.
+caffeinate -u -t 3
+RC=0; caffeinate -dim "$PY" "$ROOT/scripts/bench.py" "$@" || RC=$?
+LAST=$(ls -dt "$BUILD"/bench/*/ 2>/dev/null | head -1)
+for l in "$LAST"*/log.txt; do
+  [ -f "$l" ] || continue
+  n=$(grep -c "front end: window covered" "$l" || true)
+  [ "$n" = 0 ] || echo "warning: $(basename "$(dirname "$l")"): the window was covered $n time(s) during the run (display asleep, screen saver or another window): its frame times measure nothing, its GPU times still do"
+done
+exit $RC
