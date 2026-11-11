@@ -10,9 +10,16 @@ from nso_asm import ADRP, B
 # host holds those frames 2 vsyncs. Until the host has decided a step, and at fps_target 0, the game's own choice runs. x8, x16 and x17 are free at the site (x8 is loaded there;
 # the function uses neither x16 nor x17). Lichii (a GPL emulator; only the facts were taken) found the mode load (its commit 8f70204825: ldr w8,[x19,#0x210], 2 = 30 fps,
 # CPU time at +0x128, whole frame at +0xe8)
-def frame_step(ctx):
+# Update 1.8.0 (main d00e4f39…, the function at main+0x69cbb0, 0x28c bytes) has the same function four bytes shorter, with the mode load at +0xa4 and the interval's store at
+# +0x140, so the base game's fingerprint did not match it and 1.8.0 kept the game's own choice: slow motion on a Mac whose GPU makes frames longer than a vsync, as the base
+# game had. Read in a 1.8.0 main (2026-11-11): mode 0 adds (the calc time - the interval's time) to a sum at [x19+0x218], bounds it, and takes sum / one vsync + 1, at most 2;
+# the calc time is taken before the draw and present calls (vtable +0x110, +0x118), so a wait on the GPU is not in it; the interval is added to the vsync counter at
+# main+0x37c8438; neither function uses x16 or x17. The stub is the same at both places (frame_step_at)
+def frame_step_at(site_off, store_off):
+    return lambda ctx: frame_step(ctx, site_off, store_off)
+def frame_step(ctx, site_off, store_off):
     here, emit, fs_site, fs_put, FS_STATE_OFF, base = ctx.here, ctx.emit, ctx.site, ctx.put, ctx.state, ctx.base
-    site, interval = base + 0xa0, base + 0x13c
+    site, interval = base + site_off, base + store_off
     fs_site(site, '681242b9')       # ldr w8,[x19,#0x210]
     fs_site(interval, '681602b9')   # str w8,[x19,#0x214]: the interval, then the frame goes on
     start = here(); emit(ADRP(16, here(), FS_STATE_OFF))
@@ -38,7 +45,8 @@ def frame_step(ctx):
     fs_put(site, [B(site, start)], 'frame interval: the host\'s step, at most 2, unless the game\'s 30 fps mode is set (state page target fps; 0 = the game\'s choice by CPU time)')
 
 MATCH_FRAME_STEP = {'main': [
-    {'name': 'frame interval from the host\'s step', 'size': 0x290, 'fingerprints': ['fe68735d459ac00d848aa10c5da10964193abc0c950c35cafe5203606de3ea29'], 'stub': frame_step},   # v0 main+0x3a9e28
+    {'name': 'frame interval from the host\'s step', 'size': 0x290, 'fingerprints': ['fe68735d459ac00d848aa10c5da10964193abc0c950c35cafe5203606de3ea29'], 'stub': frame_step_at(0xa0, 0x13c)},   # v0 main+0x3a9e28
+    {'name': 'frame interval from the host\'s step', 'size': 0x28c, 'fingerprints': ['f5ff6fbab4ddd6eb8be409727bbc0cbf68ef791aa143a1043253cdbb771cc365'], 'stub': frame_step_at(0xa4, 0x140)},   # 1.8.0 (v917504) main+0x69cbb0
 ]}
 
 BINDING = [
