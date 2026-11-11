@@ -198,6 +198,20 @@ def bahs_shaders(d, label):
         st = nvn2_stage(ctl, code) if nvn2 else 'cs' if code[:4] == CS_MAGIC else sph_stage(code) if code[:4] == GFX_MAGIC else None
         if not st or check(label, st, ctl, code): continue
         found.append((a, c, (f'{label}#BAHS@{a:#x}', st, ctl, code)))
+    # One control section has one length. The tables after a control section hold rows that read as an entry too, and such a row names a section further on at a length that is
+    # the row's own size word. Mario Kart World 1.8.0 has two. DrivePassShaderDefault.sharcb@0xa1de4, four bytes past a section's end, is (0, 0, 0x150, 0x4954), and 0x4954 further
+    # on lies compute control section 0xa6738: the entry paired it with the code region's first bytes, a vertex shader's ("Ampere instruction 481 at 0x0" again, the one shader of
+    # 11,603 that did not translate). agl_common.sharcb@0x48db4 is (0, 0, 0x5ac0, 0xccc) and paired pixel control section 0x49a80 (its stage byte, +0x56, is 1) with the same
+    # first bytes: a vertex shader that translated and that no host loads (nine hosts' prewarm lists do not have it). Each of the two sections has its own entry, 0x68 before it,
+    # with its own code and the length the files' other entries give, 0xd8 (2,580 and 1,555 of them). Donkey Kong Bananza 3.2.0 has two such rows as well (agl_common.sharcb@0x33a04,
+    # agl_technique.sharcb@0x320ec; the first takes 0x500 bytes of code where the region's first shader has 0x300). So where the entries that name one NVN2 section disagree on its
+    # length, only those with the length most of the file's NVN2 entries give stand (mkw/bahs_probe.py lists what the rule takes out of an archive)
+    nv = [f for f in found if nvn2_ctl(f[2][2])]
+    if nv:
+        usual = collections.Counter(len(f[2][2]) for f in nv).most_common(1)[0][0]
+        named = collections.defaultdict(set)
+        for _, c, s in nv: named[c].add(len(s[2]))
+        found = [f for f in found if not (nvn2_ctl(f[2][2]) and len(f[2][2]) != usual and usual in named[f[1]])]
     # A program entry never lies inside a control section. An NVN2 section's +0x38..+0x47 (instruction length, c1 start and end, code length: 0x1100, 0, 0x1100, 0x1100) reads as
     # an entry whose offset, control length and control distance are all that length: Ocarina of Time's agl_common.sharcb@0x357f0 paired compute shader 30's control with a vertex
     # shader's code, a shader the game never loads, and its SPH came to the translator as an instruction ("Ampere instruction 481 at 0x0"). Each section counts with its own

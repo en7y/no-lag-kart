@@ -50,5 +50,48 @@ class ControlWordsAreNoEntry(unittest.TestCase):
         self.assertTrue(ss.nvn2_ctl(d[c:c + csz]) and not z and off % 0x100 == 0 and ss.check('f', 'vs', d[c:c + csz], d[REGION + off:REGION + off + CODE]) is None)
 
 
+def bahs_table_row():
+    """A vertex program and a compute program, each entry 0x68 before its control section (0x168 and 0x3a0), code at the region's +0 and +0x100. Four bytes past the vertex
+    program's control section a table row, (0, 0, 0x150, the distance to the compute control section), reads as an entry: the compute control at a length of 0x150 with the code
+    at the region's +0, the vertex shader's. Mario Kart World 1.8.0's DrivePassShaderDefault.sharcb@0xa1de4 is such a row, and it lies in no control section"""
+    region = 0x600
+    d = bytearray(region + 2 * CODE)
+    struct.pack_into('<II', d, 0x18, 2 * CODE, region)
+    for entry, off, stage, word in ((0x100, 0, 0, 0x000c0481), (0x338, CODE, 5, 0x0000794d)):   # the vertex code starts with its SPH, the compute code with an instruction
+        struct.pack_into('<IIIi', d, entry, off, 0, 0xe0, 0x68)
+        d[entry + 0x68:entry + 0x68 + 0xe0] = nvn2_ctl(stage)
+        code = bytearray(CODE); struct.pack_into('<I', code, 0, word)
+        d[region + off:region + off + CODE] = code
+    row = 0x168 + 0xe0 + 4
+    struct.pack_into('<IIIi', d, row, 0, 0, 0x150, 0x3a0 - row)
+    return bytes(d), row, region
+
+
+class TableRowIsNoEntry(unittest.TestCase):
+    def test_only_the_two_programs(self):
+        d, _, _ = bahs_table_row()
+        got = ss.bahs_shaders(d, 'f.sharcb')
+        self.assertEqual([w for w, *_ in got], ['f.sharcb#BAHS@0x100', 'f.sharcb#BAHS@0x338'])
+        self.assertEqual([st for _, st, _, _ in got], ['vs', 'cs'])
+        self.assertEqual(struct.unpack_from('<I', got[1][3], 0)[0], 0x0000794d)   # the compute program has its own code, not the vertex shader's
+        self.assertEqual({len(ctl) for _, _, ctl, _ in got}, {0xe0})
+
+    def test_the_row_is_a_candidate_without_the_rule(self):   # it passes the scan's own checks and lies in no control section: only the section's length tells
+        d, row, region = bahs_table_row()
+        off, z, csz, rel = struct.unpack_from('<IIIi', d, row)
+        c = row + rel
+        self.assertTrue(ss.nvn2_ctl(d[c:c + csz]) and not z and off % 0x100 == 0 and c + csz <= region)
+        self.assertIsNone(ss.check('f', 'cs', d[c:c + csz], d[region + off:region + off + CODE]))
+        self.assertEqual(ss.nvn2_stage(d[c:c + csz], d[region + off:region + off + CODE]), 'cs')
+        self.assertFalse(any(lo <= row < lo + ss.ctl_len(d[lo:lo + 0xe0]) for lo in (0x168, 0x3a0)))
+
+    def test_a_file_whose_sections_have_two_lengths_keeps_both(self):   # a length is only wrong against the same section's other entries
+        d, row, region = bahs_table_row()
+        d = bytearray(d); struct.pack_into('<IIIi', d, row, 0, 0, 0, 0)   # no table row
+        struct.pack_into('<IIIi', d, 0x338, CODE, 0, 0x150, 0x68)        # the compute program's own entry gives its section 0x150
+        got = ss.bahs_shaders(bytes(d), 'f.sharcb')
+        self.assertEqual([(w, st, len(ctl)) for w, st, ctl, _ in got], [('f.sharcb#BAHS@0x100', 'vs', 0xe0), ('f.sharcb#BAHS@0x338', 'cs', 0x150)])
+
+
 if __name__ == '__main__':
     unittest.main()
