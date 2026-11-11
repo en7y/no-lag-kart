@@ -916,7 +916,7 @@ void mtl_pool_del(const void *mem) {
     NSMutableArray<id<MTLBuffer>> *gone = [NSMutableArray array];
     int bg = -1; for (int k = 0; k < g_nbig; k++) if (g_big[k].mem == mem) bg = k;
     for (int i = 0; i < g_npool; i++)
-        if (g_pools[i].key == mem) { id<MTLBuffer> b = g_pools[i].buf; [g_keep removeObject:b]; [gone addObject:b]; if (g_pools[i].res) g_pool_res_n--;
+        if (g_pools[i].key == mem) { id<MTLBuffer> b = g_pools[i].buf; [g_keep removeObjectIdenticalTo:b]; [gone addObject:b]; if (g_pools[i].res) g_pool_res_n--;
             if (!g_dead_pools) g_dead_pools = [NSHashTable weakObjectsHashTable];
             [g_dead_pools addObject:b]; g_pools[i] = g_pools[--g_npool]; g_pidx_ok = 0; g_plast = -1; atomic_fetch_add(&g_pool_gen, 1);
             if (i < g_npool) big_moved(i);   // the entry moved into this place
@@ -934,14 +934,28 @@ void mtl_pool_del(const void *mem) {
 }
 
 // Address → pool: the last hit first, then a binary search over indices sorted by start address, and a full linear scan only when that fails (pools overlapping).
-// The Legend of Zelda: Breath of the Wild keeps about 1760 memory pools alive and every buffer binding of every draw looks one up; the old full scan took about 4% of the submit thread's samples (mtl_gpu_addr 222 / 6 s). Adding / removing pools invalidates the index, which is re-sorted when next used. Caller holds g_mu
-static int *g_pidx; static int g_pidx_cap;
+// The Legend of Zelda: Breath of the Wild keeps about 1760 memory pools alive and every buffer binding of every draw looks one up; the old full scan took about 4% of the submit thread's samples (mtl_gpu_addr 222 / 6 s). Adding / removing pools invalidates the index, which is put right when next used. Caller holds g_mu
+// The index keeps the order of its last sort: indices past the table's new end leave it, new ones join at its end, and an insertion sort moves the few entries that are out of
+// place (a removed pool's place in the table is taken by the table's last entry, so that one is). PIDX_NOTE
+// An index further out of order than PIDX_MOVES places an entry is sorted anew, as it was every time
+enum { PIDX_MOVES = 8 };
+static int *g_pidx; static int g_pidx_cap, g_pidx_n; static uint64_t g_pidx_sorts, g_pidx_anew;   // g_pidx_n: the index holds a permutation of 0 .. g_pidx_n - 1
 static int pidx_cmp(const void *a, const void *b) { uintptr_t x = g_pools[*(const int *)a].lo, y = g_pools[*(const int *)b].lo; return x < y ? -1 : x > y; }
 static void pidx_sort(void) {
     if (g_pidx_ok) return;
     if (g_pidx_cap < g_npool) { g_pidx_cap = g_npool * 2; g_pidx = realloc_or_die(g_pidx, (size_t)g_pidx_cap * sizeof *g_pidx, "the memory pool index"); }
-    for (int i = 0; i < g_npool; i++) g_pidx[i] = i;
-    qsort(g_pidx, (size_t)g_npool, sizeof *g_pidx, pidx_cmp); g_pidx_ok = 1;
+    int n = 0;
+    for (int i = 0; i < g_pidx_n; i++) if (g_pidx[i] < g_npool) g_pidx[n++] = g_pidx[i];
+    for (int i = g_pidx_n; i < g_npool; i++) g_pidx[n++] = i;
+    g_pidx_n = n; g_pidx_sorts++;   // n == g_npool: a permutation of 0 .. g_pidx_n - 1 loses the indices from g_npool on, or gains those up to it
+    long left = (long)PIDX_MOVES * n + 64; int i = 1;
+    for (; i < n && left >= 0; i++) {
+        int v = g_pidx[i], j = i; uintptr_t lo = g_pools[v].lo;
+        while (j > 0 && g_pools[g_pidx[j - 1]].lo > lo) { g_pidx[j] = g_pidx[j - 1]; j--; }
+        g_pidx[j] = v; left -= i - j;
+    }
+    if (i < n) { qsort(g_pidx, (size_t)n, sizeof *g_pidx, pidx_cmp); g_pidx_anew++; }
+    g_pidx_ok = 1;
 }
 static int big_new(big_pool *b, uintptr_t lo, uintptr_t hi, uintptr_t end, uint64_t unk) {   // caller holds g_mu: a new entry for [lo, end) of the pool, looked up for addresses in [lo, hi)
     id<MTLBuffer> buf = pool_buf(lo, end);
@@ -963,7 +977,7 @@ static int big_lookup(big_pool *b, uint64_t addr, uint64_t len) {
     if (i >= 0 && (have >= b->hi || have >= addr + want)) return i;
     int n = big_new(b, lo, lo + BIG_S, end, end >= b->b ? 1 : BIG_UNKNOWN); if (n < 0) return -1;
     if (i >= 0) {   // lengthened: what is encoded with the shorter chunk keeps it, resident, until the pool goes
-        [b->old addObject:g_pools[i].buf]; [g_keep removeObject:g_pools[i].buf]; g_pools[n].res = 0; if (g_pools[i].res) g_pool_res_n--;
+        [b->old addObject:g_pools[i].buf]; [g_keep removeObjectIdenticalTo:g_pools[i].buf]; g_pools[n].res = 0; if (g_pools[i].res) g_pool_res_n--;
         g_pools[i] = g_pools[n]; g_npool--; n = i;
     }
     b->chunk[k] = n + 1;
@@ -6385,10 +6399,13 @@ void mtl_prog_snapshot(prog_t *copy,const prog_t *source) {
 typedef struct { tex_t t; int ok; view_t v; int has_v; void *view; uint64_t view_id, view_rid, view_ser, view_dirty, view_stamp; const void *view_span; int view_pkg;   // view_pkg: CPU-written (packaged); only those depend on guest writes (view_dirty)
                  void *alt, *alt_of; uint64_t alt_rid; uint8_t alt_type;   // alt: compatible view used when the shader's declared type differs from view (tex_fit), alt_of = the view it was built from
                  void *im, *im_of; uint64_t im_rid;                       // im: the view an image slot reads in the shader's pixel class (img_fit), im_of = the view it was built from
-                 int prev, next, retired, gone; uint64_t transient_sub; uint8_t tt1;   // prev / next: descriptor index + 1, by texture serial; gone: its memory pool was finalized (treg_drop_pool_views)
+                 int prev, next, pprev, pnext, retired, gone; uint64_t transient_sub; uint8_t tt1;   // prev / next: descriptor index + 1, by texture serial, pprev / pnext: by memory pool; gone: its memory pool was finalized (treg_drop_pool_views)
                  void *stand; uint64_t stand_rid, stand_sum, reg_frame; uint8_t stand_tt1, stand_no; } treg_t;   // stand: what its pool table entries hold while its texture is not made (pool_stand; retained), stand_tt1 its texture type + 1, stand_no: it can have none; reg_frame: the frame of the registration
 static treg_t *g_treg; static int g_ntreg;
 static nvn_hmap g_treg_serial = {.klen = 8};   // serial → first registered descriptor index + 1, under g_rmu
+// The IDs registered with a texture of one memory pool, a list as by serial: a pool's Finalize marks them gone. TREG_POOL_NOTE
+static nvn_hmap g_treg_pool = {.klen = 8};   // memory pool object → first registered descriptor index + 1, under g_rmu
+static uint64_t g_treg_pool_seen;              // IDs a pool's Finalize looked at
 // Texture ID views are valid for an epoch (view_ser), not for every serial table change: ser_sync takes the notes (ser_note) and sends only the IDs registered with a noted serial
 // down the slow path; a change without a note starts a new epoch, which sends them all (what every g_ser_gen bump did before). A battle map in Fire Emblem: Fortune's Weave changes a
 // few serials a frame (the per-stage program ring in bind_stages among them), and each change made the next pool walk (pool_gpu) resolve all ~5,000 IDs again, 2 ms a frame.
@@ -6424,14 +6441,24 @@ static void treg_drop_stand(treg_t *r) {
     if (r->stand) { defer_obj_unref((__bridge id)r->stand); CFRelease(r->stand); r->stand = NULL; r->stand_rid = 0; g_stand_live--; }
     r->stand_no = 0;
 }
-static void treg_unlink(int id_) {
+static void treg_unlink(int id_) {   // out of its serial's list and out of its pool's
     treg_t *r = &g_treg[id_];
-    if (!r->ok || !r->t.serial) return;
-    if (r->prev) g_treg[r->prev - 1].next = r->next;
-    else if (r->next) nvn_hm_put(&g_treg_serial, &r->t.serial, (void *)(uintptr_t)r->next);
-    else nvn_hm_del(&g_treg_serial, &r->t.serial);
-    if (r->next) g_treg[r->next - 1].prev = r->prev;
-    r->prev = r->next = 0;
+    if (!r->ok) return;
+    if (r->t.serial) {
+        if (r->prev) g_treg[r->prev - 1].next = r->next;
+        else if (r->next) nvn_hm_put(&g_treg_serial, &r->t.serial, (void *)(uintptr_t)r->next);
+        else nvn_hm_del(&g_treg_serial, &r->t.serial);
+        if (r->next) g_treg[r->next - 1].prev = r->prev;
+        r->prev = r->next = 0;
+    }
+    if (r->t.pool) {
+        uint64_t pk = (uint64_t)(uintptr_t)r->t.pool;
+        if (r->pprev) g_treg[r->pprev - 1].pnext = r->pnext;
+        else if (r->pnext) nvn_hm_put(&g_treg_pool, &pk, (void *)(uintptr_t)r->pnext);
+        else nvn_hm_del(&g_treg_pool, &pk);
+        if (r->pnext) g_treg[r->pnext - 1].pprev = r->pprev;
+        r->pprev = r->pnext = 0;
+    }
 }
 static void treg_retire_serial(uint64_t ser) {
     // Finalize retires the API object, not the descriptor's copied metadata.
@@ -6466,11 +6493,17 @@ typedef struct { const void *pool; unsigned next; vc_key k[VC_WAYS]; void *view[
                  void *rows, *rows_of; uint64_t rows_rid, rows_n; } vc_set;   // rows: a texture buffer as 2D rows (tbuf_as_2d; retained, resident), rows_of / rows_n: the buffer texture it was made from and its element count
 static nvn_hmap g_vc = {.klen = 8};   // texture serial → vc_set
 static uint64_t g_vc_hit, g_vc_new;
+static nvn_hmap g_vc_pools = {.klen = 8};   // memory pool object → how many sets are of its textures: a pool's Finalize walks the cache only for a pool that has some (vc_drop_pool)
+static void vc_pool_n(const void *pool, int d) {
+    uint64_t pk = (uint64_t)(uintptr_t)pool; intptr_t n = (intptr_t)nvn_hm_get(&g_vc_pools, &pk) + d;
+    if (n > 0) nvn_hm_put(&g_vc_pools, &pk, (void *)n); else nvn_hm_del(&g_vc_pools, &pk);
+}
 static void vc_rows_drop(vc_set *s) { if (s->rows) { defer_obj_release((__bridge id)s->rows); CFRelease(s->rows); s->rows = s->rows_of = NULL; s->rows_rid = s->rows_n = 0; } }
 static void vc_set_free(void *p) {
     vc_set *s = p;
     for (int i = 0; i < VC_WAYS; i++) if (s->view[i]) { defer_obj_unref((__bridge id)s->view[i]); CFRelease(s->view[i]); }
     vc_rows_drop(s);
+    vc_pool_n(s->pool, -1);
     free(s);
 }
 static id<MTLTexture> vc_get(uint64_t ser, const vc_key *k, id<MTLTexture> base) {
@@ -6489,7 +6522,7 @@ static vc_set *vc_set_for(uint64_t ser, const void *pool) {   // the texture's e
     if (!s) {
         if (g_vc.n >= VC_MAX) nvn_hm_clear(&g_vc, vc_set_free);
         if (!(s = calloc(1, sizeof *s))) return NULL;
-        s->pool = pool; nvn_hm_put(&g_vc, &ser, s);
+        s->pool = pool; nvn_hm_put(&g_vc, &ser, s); vc_pool_n(pool, 1);
     }
     return s;
 }
@@ -6504,6 +6537,7 @@ void mtl_vc_stats(unsigned *n, uint64_t *hit, uint64_t *made) { os_unfair_lock_l
 static void tb2_gone_clear(void);
 static void vc_drop_pool(const void *pool) {   // caller holds g_rmu
     tb2_gone_clear();
+    uint64_t pk = (uint64_t)(uintptr_t)pool; if (!nvn_hm_get(&g_vc_pools, &pk)) return;
     for (uint32_t i = 0; i < g_vc.cap;) {   // a deletion shifts later entries back into slot i: look at it again
         vc_set *s = g_vc.vals[i];
         if (s && s->pool == pool) { uint64_t ser; memcpy(&ser, g_vc.keys + (size_t)i * 8, 8); nvn_hm_del(&g_vc, &ser); vc_set_free(s); }
@@ -6609,9 +6643,10 @@ static void treg_gone(treg_t *r) {
     treg_drop_stand(r);
 }
 static void treg_drop_pool_views(const void *pool) {
+    uint64_t pk = (uint64_t)(uintptr_t)pool;
     os_unfair_lock_lock(&g_rmu);
     vc_drop_pool(pool);
-    for (int i = 0; i < g_ntreg; i++) if (g_treg[i].ok && (const void *)g_treg[i].t.pool == pool) treg_gone(&g_treg[i]);
+    for (int k = (int)(uintptr_t)nvn_hm_get(&g_treg_pool, &pk); k; k = g_treg[k - 1].pnext) { g_treg_pool_seen++; treg_gone(&g_treg[k - 1]); }   // they stay registered, and listed
     os_unfair_lock_unlock(&g_rmu);
 }
 // Which texture IDs shaders read through a pool (dmsh_reflect.py pool_arrays): a bitmap the shaders set, one bit an ID, which the host folds into g_seen_done at each submission. A handle read from game
@@ -6656,6 +6691,12 @@ void mtl_reg_tex(int tid, const tex_t *t, const view_t *v) {
             rr->next = (int)(uintptr_t)nvn_hm_get(&g_treg_serial, &t->serial);
             if (rr->next) g_treg[rr->next - 1].prev = id_ + 1;
             nvn_hm_put(&g_treg_serial, &t->serial, (void *)(uintptr_t)(id_ + 1));
+        }
+        if (t && t->pool) {
+            uint64_t pk = (uint64_t)(uintptr_t)t->pool;
+            rr->pprev = 0; rr->pnext = (int)(uintptr_t)nvn_hm_get(&g_treg_pool, &pk);
+            if (rr->pnext) g_treg[rr->pnext - 1].pprev = id_ + 1;
+            nvn_hm_put(&g_treg_pool, &pk, (void *)(uintptr_t)(id_ + 1));
         }
         if (id_ < (1 << 20)) atomic_store_explicit(&g_tser[id_], t ? t->serial : 0, memory_order_release);
     }
