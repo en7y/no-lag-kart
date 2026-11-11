@@ -109,66 +109,140 @@ static void nq_cost_end(nq_cost c) {
     atomic_fetch_add(&g_sub_instr,ins-c.instr); atomic_fetch_add(&g_cum_sub_instr,ins-c.instr);
     atomic_fetch_add(&g_cum_sub_cyc,cyc-c.cycles); atomic_fetch_add(&g_cum_sub_sys_ns,thr_sys_ns()-c.sys);
 }
-// DM_SUBPROF=<ms> (diagnostic): what a long submission was doing. While one replay of the queue worker (commands or a present) has run for longer than <ms>, a helper
-// thread takes the worker's stack every 0.4 ms (suspend, registers, frame-pointer chain, resume: nothing else between the two, so no lock the worker holds is asked for),
-// and when that replay ends the worker logs the stacks, innermost frame first, equal stacks in a row counted. A frame that takes 50 ms once in half a minute cannot be told
-// from the 2,000 ordinary ones in a sampler's totals; here only the long one is looked at, with the time into it of every stack
+// DM_SUBPROF=<ms>[,all] (diagnostic): what the submissions of a long frame were doing. Once the queue worker's replays of one frame (commands and presents) have run for longer
+// than <ms> in all, a helper thread takes the worker's stack every 0.4 ms (suspend, registers, frame-pointer chain, resume: nothing else between the two, so no lock the worker
+// holds is asked for), and when a replay ends the worker logs the stacks taken in it, innermost frame first, equal stacks in a row counted. A stack that waits for a lock
+// (__ulock_wait2: an os_unfair_lock; __psynch_mutexwait: a pthread mutex) names the lock and is followed by the stack of the thread that holds it, taken at once: the kernel
+// call's arguments, still in the registers, say which thread that is. With ",all" every other thread that is running at that moment gives its stack too, logged by thread and
+// stack, the most frequent first. Other threads' stacks are read through the kernel, so a bad frame pointer ends the walk. A frame that takes 50 ms once in half a minute cannot
+// be told from the 2,000 ordinary ones in a sampler's totals; here only the long one is looked at, with the time into the frame's replays of every stack
 #include <mach/mach.h>
+#include <mach/mach_vm.h>
 #include <dlfcn.h>
-#include <os/lock.h>
-enum { SP_DEPTH = 20, SP_MAX = 400 };
-static double sp_ms = -1; static _Atomic uint64_t sp_t0; static thread_act_t sp_port; static pthread_t sp_pth; static os_unfair_lock sp_lock = OS_UNFAIR_LOCK_INIT;
-static struct { uint32_t us, n; uint64_t pc[SP_DEPTH]; } sp_s[SP_MAX]; static int sp_n;
+enum { SP_DEPTH = 20, SP_MAX = 400, SP_ODEPTH = 12, SP_OMAX = 512 };
+typedef struct { uint32_t n; uint64_t tid, pc[SP_ODEPTH]; char name[32]; } sp_stack;   // another thread's
+static double sp_ms = -1; static int sp_all; static _Atomic uint64_t sp_t0; static uint64_t sp_acc, sp_frame = ~0ull; static thread_act_t sp_port; static pthread_t sp_pth;
+static os_unfair_lock sp_lock = OS_UNFAIR_LOCK_INIT; static uintptr_t sp_ulock, sp_mwait;
+static struct { uint32_t us, n; uint64_t pc[SP_DEPTH], lock; sp_stack own; } sp_s[SP_MAX]; static int sp_n;
+static struct { sp_stack s; uint32_t count; } sp_o[SP_OMAX]; static int sp_on; static uint32_t sp_olost;
+static int sp_take(thread_act_t t, sp_stack *o) {   // the stack of a thread other than the worker
+    o->n = 0; o->name[0] = 0; o->tid = 0;
+    if (thread_suspend(t) != KERN_SUCCESS) return 0;
+    arm_thread_state64_t st; mach_msg_type_number_t cnt = ARM_THREAD_STATE64_COUNT;
+    if (thread_get_state(t, ARM_THREAD_STATE64, (thread_state_t)&st, &cnt) == KERN_SUCCESS) {
+        o->pc[o->n++] = (uint64_t)arm_thread_state64_get_pc(st); o->pc[o->n++] = (uint64_t)arm_thread_state64_get_lr(st);
+        uint64_t fp = (uint64_t)arm_thread_state64_get_fp(st), f[2]; mach_vm_size_t got = 0;
+        while (o->n < SP_ODEPTH && fp && !(fp & 7) && mach_vm_read_overwrite(mach_task_self(), fp, 16, (mach_vm_address_t)(uintptr_t)f, &got) == KERN_SUCCESS && got == 16 && f[1]) {
+            o->pc[o->n++] = f[1]; if (f[0] <= fp) break; fp = f[0]; }
+    }
+    thread_resume(t);
+    thread_identifier_info_data_t ii; mach_msg_type_number_t c = THREAD_IDENTIFIER_INFO_COUNT;
+    if (thread_info(t, THREAD_IDENTIFIER_INFO, (thread_info_t)&ii, &c) == KERN_SUCCESS) o->tid = ii.thread_id;
+    thread_extended_info_data_t xi; c = THREAD_EXTENDED_INFO_COUNT;
+    if (thread_info(t, THREAD_EXTENDED_INFO, (thread_info_t)&xi, &c) == KERN_SUCCESS) snprintf(o->name, sizeof o->name, "%s", xi.pth_name);
+    return o->n > 0;
+}
+// The lock's owner (by its thread port for an os_unfair_lock, by its thread ID for a pthread mutex) into *own, and with DM_SUBPROF=…,all every running thread into sp_o
+static void sp_others(thread_act_t self, sp_stack *own, thread_act_t owner, uint64_t owner_tid) {
+    if (owner != MACH_PORT_NULL && !sp_all) { sp_take(owner, own); return; }
+    thread_act_array_t th; mach_msg_type_number_t nth;
+    if (task_threads(mach_task_self(), &th, &nth) != KERN_SUCCESS) return;
+    for (mach_msg_type_number_t i = 0; i < nth; i++) {
+        thread_act_t t = th[i];
+        if (t != self && t != sp_port) {
+            mach_msg_type_number_t c; int is_owner = owner != MACH_PORT_NULL && t == owner;
+            if (!is_owner && owner_tid) { thread_identifier_info_data_t ii; c = THREAD_IDENTIFIER_INFO_COUNT; is_owner = thread_info(t, THREAD_IDENTIFIER_INFO, (thread_info_t)&ii, &c) == KERN_SUCCESS && ii.thread_id == owner_tid; }
+            thread_basic_info_data_t bi; c = THREAD_BASIC_INFO_COUNT;
+            int running = sp_all && thread_info(t, THREAD_BASIC_INFO, (thread_info_t)&bi, &c) == KERN_SUCCESS && bi.run_state == TH_STATE_RUNNING;
+            sp_stack st;
+            if ((is_owner || running) && sp_take(t, &st)) {
+                if (is_owner) *own = st;
+                if (running) {
+                    int k = 0; while (k < sp_on && !(sp_o[k].s.tid == st.tid && sp_o[k].s.n == st.n && !memcmp(sp_o[k].s.pc, st.pc, st.n * sizeof *st.pc))) k++;
+                    if (k < sp_on) sp_o[k].count++; else if (sp_on < SP_OMAX) { sp_o[sp_on].s = st; sp_o[sp_on++].count = 1; } else sp_olost++;
+                }
+            }
+        }
+        mach_port_deallocate(mach_task_self(), t);
+    }
+    vm_deallocate(mach_task_self(), (vm_address_t)th, nth * sizeof *th);
+}
 static void *sp_main(void *unused) {
     (void)unused; pthread_setname_np("submission profiler");
     uint64_t limit = (uint64_t)(sp_ms * 1e6);
     uintptr_t hi = (uintptr_t)pthread_get_stackaddr_np(sp_pth), lo = hi - pthread_get_stacksize_np(sp_pth);
+    thread_act_t self = mach_thread_self();
     for (;;) {
         usleep(400);
         uint64_t t0 = atomic_load(&sp_t0), now = now_ns();
         if (!t0 || now < t0 || now - t0 < limit) continue;
         os_unfair_lock_lock(&sp_lock);
         if (atomic_load(&sp_t0) == t0 && sp_n < SP_MAX && thread_suspend(sp_port) == KERN_SUCCESS) {
-            arm_thread_state64_t st; mach_msg_type_number_t cnt = ARM_THREAD_STATE64_COUNT;
+            arm_thread_state64_t st; mach_msg_type_number_t cnt = ARM_THREAD_STATE64_COUNT; __typeof__(sp_s[0]) *x = NULL; thread_act_t owner = MACH_PORT_NULL; uint64_t owner_tid = 0;
             if (thread_get_state(sp_port, ARM_THREAD_STATE64, (thread_state_t)&st, &cnt) == KERN_SUCCESS) {
-                __typeof__(sp_s[0]) *x = &sp_s[sp_n++]; x->us = (uint32_t)((now - t0) / 1000); x->n = 0;
-                x->pc[x->n++] = (uint64_t)arm_thread_state64_get_pc(st); x->pc[x->n++] = (uint64_t)arm_thread_state64_get_lr(st);
+                x = &sp_s[sp_n++]; x->us = (uint32_t)((now - t0) / 1000); x->n = 0; x->lock = 0; x->own.n = 0;
+                uintptr_t pc = (uintptr_t)arm_thread_state64_get_pc(st);
+                x->pc[x->n++] = pc; x->pc[x->n++] = (uint64_t)arm_thread_state64_get_lr(st);
                 uintptr_t fp = (uintptr_t)arm_thread_state64_get_fp(st);
                 while (x->n < SP_DEPTH && fp >= lo && fp + 16 <= hi && !(fp & 7)) {
                     const uint64_t *f = (const uint64_t *)fp; if (!f[1]) break;
                     x->pc[x->n++] = f[1]; if ((uintptr_t)f[0] <= fp) break; fp = (uintptr_t)f[0]; }
+                // In the kernel call that waits for a lock the arguments are still in the registers: an os_unfair_lock's word (the value waited on) is its owner's thread port
+                // with bit 0 cleared once somebody waits; a pthread mutex's wait names its owner's thread ID
+                if (sp_ulock && pc - sp_ulock < 16) { x->lock = st.__x[1]; owner = (thread_act_t)(st.__x[2] | 1); }
+                else if (sp_mwait && pc - sp_mwait < 16) { x->lock = st.__x[0]; owner_tid = st.__x[3]; }
             }
             thread_resume(sp_port);
+            if (x && (owner != MACH_PORT_NULL || owner_tid || sp_all)) sp_others(self, &x->own, owner, owner_tid);
         }
         os_unfair_lock_unlock(&sp_lock);
     }
     return NULL;
 }
-static void sp_begin(void) {
-    if (sp_ms < 0) { const char *e = getenv("DM_SUBPROF"); sp_ms = e ? atof(e) : 0;
-        if (sp_ms > 0) { sp_port = mach_thread_self(); sp_pth = pthread_self(); pthread_t t; if (pthread_create(&t, NULL, sp_main, NULL)) sp_ms = 0; else { pthread_detach(t);
-            LOG("[subprof] stacks of the queue worker while a replay runs longer than %.1f ms (DM_SUBPROF)", sp_ms); } } }
-    if (sp_ms > 0) atomic_store(&sp_t0, now_ns());
+static void sp_begin(uint64_t frame) {
+    if (sp_ms < 0) { const char *e = getenv("DM_SUBPROF"); sp_ms = e ? atof(e) : 0; sp_all = e && strstr(e, "all");
+        if (sp_ms > 0) { sp_port = mach_thread_self(); sp_pth = pthread_self(); sp_ulock = (uintptr_t)dlsym(RTLD_DEFAULT, "__ulock_wait2"); sp_mwait = (uintptr_t)dlsym(RTLD_DEFAULT, "__psynch_mutexwait");
+            pthread_t t; if (pthread_create(&t, NULL, sp_main, NULL)) sp_ms = 0; else { pthread_detach(t);
+            LOG("[subprof] stacks of the queue worker once a frame's replays have run longer than %.1f ms%s (DM_SUBPROF); lock owners are %s", sp_ms, sp_all ? ", and of every running thread" : "",
+                sp_ulock && sp_mwait ? "named" : "not named (the kernel call stubs were not found)"); } } }
+    if (sp_ms <= 0) return;
+    if (frame != sp_frame) { sp_frame = frame; sp_acc = 0; }
+    atomic_store(&sp_t0, now_ns() - sp_acc);   // as if this replay had begun when the frame's first one did, with no time between them
 }
-static const char *sp_name(uint64_t pc, char *buf, size_t n) {
-    Dl_info di; if (dladdr((void *)(uintptr_t)pc, &di) && di.dli_sname) { snprintf(buf, n, "%s", di.dli_sname); return buf; }
+static const char *sp_name(uint64_t pc, char *buf, size_t n, int offset) {
+    Dl_info di;
+    if (dladdr((void *)(uintptr_t)pc, &di) && di.dli_sname) { if (offset && (uintptr_t)pc != (uintptr_t)di.dli_saddr) snprintf(buf, n, "%s+%#lx", di.dli_sname, (unsigned long)((uintptr_t)pc - (uintptr_t)di.dli_saddr)); else snprintf(buf, n, "%s", di.dli_sname); return buf; }
     snprintf(buf, n, "%#llx", (unsigned long long)pc); return buf;
+}
+static const char *sp_line(const uint64_t *pc, uint32_t n, char *line, size_t cap) {
+    size_t at = 0; char nm[160]; line[0] = 0;
+    for (uint32_t k = 0; k < n && at + 170 < cap; k++) {
+        if (k == 1 && n > 2 && pc[1] == pc[2]) continue;   // the link register is the first frame record's return address in a function that has made its frame
+        at += (size_t)snprintf(line + at, cap - at, "%s%s", at ? " < " : "", sp_name(pc[k], nm, sizeof nm, 0)); }
+    return line;
 }
 static void sp_end(uint64_t frame) {
     if (sp_ms <= 0) return;
-    uint64_t t0 = atomic_exchange(&sp_t0, 0);
-    os_unfair_lock_lock(&sp_lock); int n = sp_n; sp_n = 0; os_unfair_lock_unlock(&sp_lock);   // the helper takes no stack once sp_t0 has changed
+    uint64_t t0 = atomic_exchange(&sp_t0, 0); if (t0) sp_acc = now_ns() - t0;
+    os_unfair_lock_lock(&sp_lock); int n = sp_n, on = sp_on; uint32_t lost = sp_olost; sp_n = 0; sp_on = 0; sp_olost = 0; os_unfair_lock_unlock(&sp_lock);   // the helper takes no stack once sp_t0 has changed
     if (!n || !t0) return;
-    LOG("[subprof] frame %llu: a replay of %.1f ms, %d stacks from %.1f ms on (innermost first; ms into the replay, stacks in a row)", (unsigned long long)frame, (now_ns() - t0) / 1e6, n, sp_s[0].us / 1e3);
+    LOG("[subprof] frame %llu: %.1f ms of replays so far, %d stacks from %.1f ms on (innermost first; ms into the frame's replays, stacks in a row)", (unsigned long long)frame, sp_acc / 1e6, n, sp_s[0].us / 1e3);
+    char line[1400], nm[160];
     for (int i = 0; i < n; ) {
-        int j = i + 1; while (j < n && sp_s[j].n == sp_s[i].n && !memcmp(sp_s[j].pc, sp_s[i].pc, sp_s[i].n * sizeof(uint64_t))) j++;
-        char line[1400]; size_t at = 0; char nm[160];
-        for (uint32_t k = 0; k < sp_s[i].n && at + 170 < sizeof line; k++) {
-            if (k == 1 && sp_s[i].n > 2 && sp_s[i].pc[1] == sp_s[i].pc[2]) continue;   // the link register is the first frame record's return address in a function that has made its frame
-            at += (size_t)snprintf(line + at, sizeof line - at, "%s%s", at ? " < " : "", sp_name(sp_s[i].pc[k], nm, sizeof nm)); }
-        LOG("[subprof]   %6.1f ms x%-3d %s", sp_s[i].us / 1e3, j - i, line);
+        int j = i + 1; while (j < n && !sp_s[i].lock && !sp_s[j].lock && sp_s[j].n == sp_s[i].n && !memcmp(sp_s[j].pc, sp_s[i].pc, sp_s[i].n * sizeof(uint64_t))) j++;
+        LOG("[subprof]   %6.1f ms x%-3d %s", sp_s[i].us / 1e3, j - i, sp_line(sp_s[i].pc, sp_s[i].n, line, sizeof line));
+        if (sp_s[i].lock) {
+            if (sp_s[i].own.n) LOG("[subprof]              the lock %s is held by thread %#llx '%s': %s", sp_name(sp_s[i].lock, nm, sizeof nm, 1), (unsigned long long)sp_s[i].own.tid, sp_s[i].own.name, sp_line(sp_s[i].own.pc, sp_s[i].own.n, line, sizeof line));
+            else LOG("[subprof]              the lock %s: its owner's stack was not taken", sp_name(sp_s[i].lock, nm, sizeof nm, 1));
+        }
         i = j;
     }
+    for (int shown = 0; shown < 40 && shown < on; shown++) {   // the most frequent first
+        int b = shown; for (int k = shown + 1; k < on; k++) if (sp_o[k].count > sp_o[b].count) b = k;
+        __typeof__(sp_o[0]) t = sp_o[b]; sp_o[b] = sp_o[shown]; sp_o[shown] = t;
+        LOG("[subprof]   running x%-3u thread %#llx '%s': %s", t.count, (unsigned long long)t.s.tid, t.s.name, sp_line(t.s.pc, t.s.n, line, sizeof line));
+    }
+    if (on > 40 || lost) LOG("[subprof]   %d more stacks of running threads not shown, %u not kept", on > 40 ? on - 40 : 0, lost);
 }
 static void *nq_worker(void *unused) {
     (void)unused; pthread_setname_np("NVN queue replay");
@@ -217,7 +291,7 @@ static void *nq_worker(void *unused) {
         if(n->kind==NQ_COMMANDS || n->kind==NQ_PRESENT) {
             dm_host_mutex_lock(&g_sub_mu); void *pool=objc_autoreleasePoolPush();
             dm_host_work++; mtl_prepare(); dm_host_work--;
-            gfx_enter(); nq_cost cost=nq_cost_begin(); sp_begin();
+            gfx_enter(); nq_cost cost=nq_cost_begin(); sp_begin(j->frame);
             if(frame!=j->frame) { frame=j->frame; mtl_set_frame(frame); }
             mtl_queue_activate(q->serial); mtl_set_queue_origin_lower_left(q->origin);
             if(n->kind==NQ_COMMANDS) {
