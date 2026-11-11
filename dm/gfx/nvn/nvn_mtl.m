@@ -5850,7 +5850,7 @@ static os_unfair_lock g_warm_lock = OS_UNFAIR_LOCK_INIT;
 static _Atomic int g_warm_ready;
 static uint64_t g_warm_t0;
 static _Atomic int g_warm_running;   // Background warm-up has not finished yet (the loading screen on entering a run waits a little longer based on this, see mtl_warm_wait)
-static _Atomic uint64_t g_warm_shaders, g_warm_rps, g_warm_mps, g_warm_cps, g_warm_skip_fz, g_warm_skip_stale;   // the prewarm's workers count into them
+static _Atomic uint64_t g_warm_shaders, g_warm_rps, g_warm_mps, g_warm_cps, g_warm_skip_fz, g_warm_skip_stale, g_warm_skip_stage;   // the prewarm's workers count into them
 static id<MTLRenderPipelineState> mtk_build(const pso_key *, NvShader *, NvShader *, NvShader *, NSError **, int *);
 static _Atomic uint64_t g_mtk_arch, g_mtk_built, g_mtk_dev;   // native mesh pipelines (mtk_build, all threads): taken from the pipeline archive, built and captured for it (arch_harvest), built with no Metal 4 descriptor (not kept)
 static uint64_t g_warm_claim_shaders, g_warm_claim_rps, g_warm_claim_cps;
@@ -9606,6 +9606,19 @@ static int warm_stale(NSString *key, NSMutableSet<NSString *> *stale) {
     if (![stale containsObject:key]) { [stale addObject:key]; g_warm_skip_stale++; }
     return 1;
 }
+// A line also gives each shader it names a stage: an S line its number, a C line compute, an R line its key's vs_stage and fs_stage. shader_load takes that stage at its word, while
+// every load the game causes takes it from the shader map (stage_of). A list written by a host that numbered or ran a stage otherwise names a shader at a stage it does not have
+// here: NVN2's task and mesh shaders as 6 and 7 (the API's numbers, before st_host put them at 3 and 4), or as compute shaders with C lines of their own (from before they ran as
+// native task / mesh pipelines). Such a shader went into the shader cache with the list's stage (warm_claim) and the game's draws took it from there, and a compute pipeline made
+// of a mesh function took Metal's compiler service down at each of its retries (MTLCompilerObject::backendCompileModule read address 0): every compile under way failed
+// (XPC_ERROR_CONNECTION_INTERRUPTED) and the next pipeline's validation aborted the host in the prepare step. Mario Kart World 1.8.0, a list merged from five lists of other
+// hosts: 19 S lines at 6 / 7, 19 at 5 and 19 C lines for its 7 task and 12 mesh shaders, of 14,965 (macOS 26.7.1, M2 Pro). A line whose stage is not the map's is left out,
+// as one of another game version is (counted in the "prewarm done" line)
+static int warm_stage_differs(NSString *key, int stage) {
+    NSString *s = warm_map_stage(key);
+    if (!s || stage_of(s) == stage) return 0;
+    g_warm_skip_stage++; return 1;
+}
 static NvShader *warm_shader(NSString *key, int stage) {
     os_unfair_lock_lock(&g_warm_dict_lock);
     id sh = g_warm_dict[key];
@@ -9654,13 +9667,16 @@ static NSArray<WarmTask *> *warm_parse(NSArray<NSString *> *paths, long *lines) 
             WarmTask *t = nil;
             if (([c[0] isEqualToString:@"S"] && c.count >= 3) || ([c[0] isEqualToString:@"C"] && c.count >= 2)) {
                 if (!c[1].length || warm_stale(c[1], stale)) continue;
-                t = [WarmTask new]; t->kind = [c[0] isEqualToString:@"S"] ? 0 : 2; t->key = c[1]; t->stage = t->kind ? 5 : c[2].intValue; [tasks addObject:t];
+                int kind = [c[0] isEqualToString:@"S"] ? 0 : 2, st = kind ? 5 : c[2].intValue;
+                if (warm_stage_differs(c[1], st)) continue;
+                t = [WarmTask new]; t->kind = kind; t->key = c[1]; t->stage = st; [tasks addObject:t];
             } else if ([c[0] isEqualToString:@"R"] && c.count >= 2) {
                 pso_skey sk; if (pso_skey_parse(c[1].UTF8String, &sk)) continue;
                 NSData *kd = [NSData dataWithBytes:&sk length:sizeof sk]; if ([seen_k containsObject:kd]) continue;
                 [seen_k addObject:kd];
                 NSString *vkey = warm_key(sk.vs, sizeof sk.vs), *fkey = warm_key(sk.fs, sizeof sk.fs);
                 if (!vkey.length || warm_stale(vkey, stale) || (fkey.length && warm_stale(fkey, stale))) continue;
+                if (warm_stage_differs(vkey, sk.vs_stage) || (fkey.length && warm_stage_differs(fkey, sk.fs_stage))) continue;
                 NSString *pk = [NSString stringWithFormat:@"%@|%@", vkey, fkey];
                 t = pairs[pk];
                 if (!t) { t = [WarmTask new]; t->kind = 1; t->vkey = vkey; t->fkey = fkey; t->rs = [NSMutableArray array]; pairs[pk] = t; [tasks addObject:t]; }
@@ -9733,8 +9749,10 @@ static void warm_task(WarmTask *t) {
     }
 }
 static void warm_finish(void) {
-    MLOG("pipeline prewarm done: shaders %llu / render pipelines %llu (specialized fragment skipped %llu) / compute pipelines %llu, background time %.1f ms; shader keys not in the shader map (another game version) %llu",
-         (unsigned long long)g_warm_shaders, (unsigned long long)g_warm_rps, (unsigned long long)g_warm_skip_fz, (unsigned long long)g_warm_cps, (bp_now() - g_warm_t0) / 1e6, (unsigned long long)g_warm_skip_stale);
+    MLOG("pipeline prewarm done: shaders %llu / render pipelines %llu (specialized fragment skipped %llu) / compute pipelines %llu, background time %.1f ms; shader keys not in the shader map (another game version) %llu; "
+         "lines left out for a shader at another stage than the shader map's (a list of another host version) %llu",
+         (unsigned long long)g_warm_shaders, (unsigned long long)g_warm_rps, (unsigned long long)g_warm_skip_fz, (unsigned long long)g_warm_cps, (bp_now() - g_warm_t0) / 1e6, (unsigned long long)g_warm_skip_stale,
+         (unsigned long long)g_warm_skip_stage);
     if (g_warm_mps) MLOG("pipeline prewarm: %llu native task / mesh pipelines; so far %llu taken from the pipeline archive, %llu built and captured for it, %llu built without it",
                          (unsigned long long)g_warm_mps, (unsigned long long)g_mtk_arch, (unsigned long long)g_mtk_built, (unsigned long long)g_mtk_dev);
     char again[96] = "";   // only a compacting start captures bases again
