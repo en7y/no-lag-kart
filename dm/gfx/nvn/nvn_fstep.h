@@ -24,6 +24,10 @@
 // snapshots the screen's verdict comes 8 presents late (hle_nvn.c), so the last late frames after one may still step up there. Ocarina of Time after loading a save: before,
 // three late frames among the first scene frames stepped to the one-off frame's cost, hold 3, where the GPU clock stayed low (19-34 ms for 12-14 ms of work) until the
 // GPU-slowed probe 34 frames (about 1.7 s) later.
+// A game whose own code takes steps of 1 and 2 only (Mario Kart World: its stub hands the game min(step, 2), dm/games/0400C3F00006E000/patches.py) sets step_max 2. Without
+// it three late frames of 2.1 to 3 vsyncs stepped to hold 3: the screen showed 20 fps while the game stepped 2 vsyncs a frame, two thirds of its speed, until the trials
+// came back down (about 2.5 s), and every payback step at hold 2 (step 3) was counted as paid while the game took 2. With it the hold ends at 2, where the game's step is
+// the hold, and the debt waits for hold 1, whose payback step (2) the game takes.
 #pragma once
 #include <math.h>
 #include <stdint.h>
@@ -53,6 +57,8 @@ typedef struct {
     int ramp;                 // set by the caller (kept): 1 = a probe's grace is renewed while its frames keep getting cheaper (FSTEP_RAMP; the host's DM_FSTEP_PROBE_RAMP)
     double pa, pb; int plate, ptotal;   // the current grace window: the cost of its first and second halves (sums), its late frames; grace frames this probe has taken in all
     double hold, since;       // vsyncs a trial waits for after a step up; vsyncs since the last step up
+    int step_max;             // set by the caller (kept): the longest step the game's own code takes, where that is below FSTEP_MAX (0 = FSTEP_MAX; the profile's fps_step_max).
+                              // Neither the hold nor a payback step goes past it: a step the game cuts short is game time lost that nothing pays back
     int per_vsync;            // set by the caller: the ticks a 1/60 s vsync is (0 = 1). At 120 fps the unit is 1/120 s (hle_nvn.c fps_high), and the waits between trials stay the same real time
     double shown_slack;       // vsyncs a frame on time may show longer than k (set by the caller): one refresh on screens whose rate is not a multiple of 60; the cost keeps FSTEP_LATE
     int screen;               // set by the caller before each call, then cleared: 0 = judge lateness by shown and cost; 1 = the screen showed a recent frame on time, 2 = late. With present
@@ -76,7 +82,8 @@ static inline int nvn_fstep_same(const nvn_fstep *s) { return s->cref > 0 && s->
 static inline int nvn_fstep_next(nvn_fstep *s, double shown, double cost, int kmin, int kmax, int fixed, int slow) {
     const double hold0 = FSTEP_HOLD0 * (s->per_vsync ? s->per_vsync : 1), hold_max = FSTEP_HOLD_MAX * (s->per_vsync ? s->per_vsync : 1);
     if (kmin < 1) kmin = 1;
-    if (kmax > FSTEP_MAX) kmax = FSTEP_MAX;
+    const int smax = s->step_max >= 1 && s->step_max < FSTEP_MAX ? s->step_max : FSTEP_MAX;   // the game's longest step (the fixed step below is the game's own and stays as it is)
+    if (kmax > smax) kmax = smax;
     if (kmax < kmin) kmax = kmin;
     if (!s->hold) s->hold = hold0;
     if (fixed > 0) {   // the game's own step: speed is right by construction, nothing to pay back
@@ -141,7 +148,7 @@ static inline int nvn_fstep_next(nvn_fstep *s, double shown, double cost, int km
     else if ((slow || nvn_fstep_same(s)) && s->k > kmin && s->since >= s->hold && !s->trial) {   // probe: straight to kmin, so the controller sees the whole deadline
         s->k = kmin; s->downs++; s->probes++; s->trial = FSTEP_RUN; s->probe = 1; s->grace = FSTEP_GRACE; s->fit_run = s->late_run = 0; s->pa = s->pb = 0; s->plate = s->ptotal = 0;
     }
-    s->step = s->k + (s->debt >= 1 && s->k < FSTEP_MAX);
+    s->step = s->k + (s->debt >= 1 && s->k < smax);
     s->paid += s->step > s->k;
     return s->step;
 }

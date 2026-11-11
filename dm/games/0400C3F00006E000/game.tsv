@@ -45,6 +45,8 @@ shader_note	Mario Kart World shaders
 # slow motion. The interval takes the host's frame step instead (MATCH_FRAME_STEP in patches.py, found by its function on any build that keeps it), at most 2; the game's own
 # 30 fps mode stays its own
 fps_target	60
+# The stub hands the game at most 2, so the host's frame step holds and pays back with at most 2 as well (nvn_fstep.h step_max): at hold 3 the game ran at two thirds of its speed
+fps_step_max	2
 
 # ---- Graphics ----
 # agl wraps its clears in render conditions on Donkey Kong Bananza and Splatoon Raiders; the same library here, to be confirmed on this game

@@ -2341,6 +2341,9 @@ static void fstep_tick(const win_t *o, int c) {
     // (Breath of the Wild on an M5 Pro: the probe's 33 frames took the clock 338 → 432 MHz and its GPU time 24.8 → 18.5 ms, then it failed at 22 ms frames; hold 1 needed about 560 MHz)
     g_fs.ramp = mtl_probe_ramp_on();
     g_fs.per_vsync = fstep_hz() / 60;
+    // The game's own longest step (profile fps_step_max, in vsyncs; nvn_fstep.h step_max). Not at 120 fps, whose unit is 1/120 s and whose holds end at 2 ticks anyway
+    g_fs.step_max = fps_high() ? 0 : DM_GAME_FPS_STEP_MAX;
+    { static int said; if (!said && DM_GAME_FPS_STEP_MAX < FSTEP_MAX && fstep_hold()) { said = 1; LOG("[nvn] frame step: the game takes steps of at most %d vsyncs (game profile fps_step_max), so no frame is held or paid back with a longer one", DM_GAME_FPS_STEP_MAX); } }
     int n = nvn_fstep_next(&g_fs, shown, cost, kmin, kmax, fixed, cslow || gslow);
     if (dm_fps_state) __atomic_store_n((uint32_t *)(dm_fps_state + 0x20), (uint32_t)n, __ATOMIC_RELAXED);
     atomic_store(&g_fs_k, g_fs.k);

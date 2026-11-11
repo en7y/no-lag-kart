@@ -18,6 +18,19 @@ static void run(sim *m, int n, double w, int kmin, int kmax, int fixed) {
     }
 }
 
+// A game whose own code takes steps of at most cap vsyncs (Mario Kart World's stub hands it min(step, 2)): took is the game time the game took, game what the host handed it
+typedef struct { sim m; int cap, step_seen, k_seen; double took; } simc;
+static void runc(simc *c, int n, double w, int kmin, int kmax) {
+    for (int i = 0; i < n; i++) {
+        int k = c->m.s.k ? c->m.s.k : kmin, step = c->m.next ? c->m.next : kmin;
+        double shown = w > k ? w : k;
+        c->m.real += shown; c->m.game += step; c->took += step > c->cap ? c->cap : step;
+        if (step > c->step_seen) c->step_seen = step;
+        c->m.next = nvn_fstep_next(&c->m.s, shown, w, kmin, kmax, 0, 0);
+        if (c->m.s.k > c->k_seen) c->k_seen = c->m.s.k;
+    }
+}
+
 int main(void) {
     {   // 120 fps (hle_nvn.c fps_high): kmin 1, kmax 2, in ticks of 1/120 s. The target follows the hold, so a hold above what frames take is the game at the right speed
         sim m = {0}; m.s.per_vsync = 2;
@@ -410,6 +423,41 @@ int main(void) {
         int left = n.s.grace; n.s.screen = 1; n.next = nvn_fstep_next(&n.s, 1.0, 4.0, 1, 3, 0, 0);
         snprintf(b, sizeof b, "  snapshots: a second costly frame inside the grace does not renew it (one-off frames %llu, grace %d → %d)", (unsigned long long)n.s.oneoffs, left, n.s.grace);
         check(n.s.oneoffs == 1 && n.s.grace == left - 1, b);
+    }
+    // step_max (the profile's fps_step_max): a game that takes steps of at most 2 vsyncs, at a 60 fps cap with holds on (kmin 1, kmax 3 from hle_nvn.c). fix 0 is the host
+    // without it: the cases show what it lost, so each check of fix 1 has its counterpart
+    for (int fix = 0; fix <= 1; fix++) {
+        // Three frames of 42 ms in a 60 fps scene (pipelines compiled at their first draw)
+        simc a = {.cap = 2}; a.m.s.step_max = fix ? 2 : 0;
+        runc(&a, 600, 0.5, 1, 3); runc(&a, 3, 2.5, 1, 3); runc(&a, 600, 0.5, 1, 3);
+        snprintf(b, sizeof b, "step_max %d: three 42 ms frames in a 60 fps scene (longest hold %d, longest step %d, real - game time %.1f vsyncs)", a.m.s.step_max, a.k_seen, a.step_seen, a.m.real - a.took);
+        check(fix ? a.k_seen == 1 && a.step_seen == 2 && a.took == a.m.game && fabs(a.m.real - a.took) <= 1 : a.k_seen == 3 && a.m.real - a.took > 30, b);
+        // Six frames of 30 ms: no one-off frame (they fit hold 2), so the hold steps to 2 and the debt of the first three is paid back at hold 1. Without step_max the payback
+        // was a step of 3 at hold 2, which the host counted as paid and the game cut to 2
+        simc h = {.cap = 2}; h.m.s.step_max = fix ? 2 : 0;
+        runc(&h, 600, 0.5, 1, 3); runc(&h, 6, 1.8, 1, 3); runc(&h, 600, 0.5, 1, 3);
+        snprintf(b, sizeof b, "  six 30 ms frames: hold 2, then 1 again (k %d, longest step %d, handed - taken %.0f vsyncs, real - game time %.1f)", h.m.s.k, h.step_seen, h.m.game - h.took, h.m.real - h.took);
+        check(fix ? h.k_seen == 2 && h.m.s.k == 1 && h.step_seen == 2 && h.took == h.m.game && fabs(h.m.real - h.took) <= 1 : h.step_seen == 3 && h.m.game - h.took >= 1, b);
+        // A scene of 37 ms frames (2.2 vsyncs), which 30 fps does not hold: at hold 2 the game runs at 2 / 2.2 of its speed; at hold 3 it showed 20 fps at two thirds
+        simc d = {.cap = 2}; d.m.s.step_max = fix ? 2 : 0;
+        runc(&d, 120, 0.5, 1, 3); double r0 = d.m.real, t0 = d.took; runc(&d, 100, 2.2, 1, 3); r0 = d.m.real, t0 = d.took; runc(&d, 600, 2.2, 1, 3);
+        double speed = (d.took - t0) / (d.m.real - r0), fps = 600 * 60 / (d.m.real - r0);
+        snprintf(b, sizeof b, "  a scene of 37 ms frames: hold %d, %.1f fps, the game at %.3f of its speed", d.m.s.k, fps, speed);
+        check(fix ? d.m.s.k == 2 && d.step_seen == 2 && speed > 0.90 && fps > 27 : d.m.s.k == 3 && speed < 0.67 && fps < 20.1, b);
+        // A 30 fps cap (DM_FPS_TARGET=30: kmin 2, kmax 2) with a late frame now and then: no payback step of 3
+        simc t = {.cap = 2}; t.m.s.step_max = fix ? 2 : 0;
+        for (int i = 0; i < 20; i++) { runc(&t, 59, 1.0, 2, 2); runc(&t, 1, 3.5, 2, 2); }
+        snprintf(b, sizeof b, "  a 30 fps cap with a 58 ms frame every second: longest step %d, handed - taken %.0f vsyncs", t.step_seen, t.m.game - t.took);
+        check(fix ? t.step_seen == 2 && t.took == t.m.game : t.step_seen == 3 && t.m.game - t.took >= 10, b);
+    }
+    {   // step_max 3 is the default; the game's own fixed step is not cut (its 30 fps mode is published as fixed 2; a fixed 3 stays 3)
+        simc a = {.cap = 3}; a.m.s.step_max = 3;
+        runc(&a, 600, 0.5, 1, 3); runc(&a, 3, 2.5, 1, 3);
+        check(a.k_seen == 3, "step_max 3: as without it (three 42 ms frames step to hold 3)");
+        sim f = {0}; f.s.step_max = 2; run(&f, 60, 0.5, 1, 3, 2); int k2 = f.s.k, s2 = f.s.step; run(&f, 60, 0.5, 1, 3, 3);
+        check(k2 == 2 && s2 == 2 && f.s.k == 3 && f.s.step == 3, "step_max 2: the game's own fixed step is held as it is (2, and 3)");
+        run(&f, 60, 0.5, 1, 3, 0);
+        check(f.s.k == 1, "  and the hold starts again from kmin when it ends");
     }
     printf("== %d checks, %d failed ==\n", checks, fail);
     return fail != 0;
