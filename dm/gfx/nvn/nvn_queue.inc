@@ -109,6 +109,67 @@ static void nq_cost_end(nq_cost c) {
     atomic_fetch_add(&g_sub_instr,ins-c.instr); atomic_fetch_add(&g_cum_sub_instr,ins-c.instr);
     atomic_fetch_add(&g_cum_sub_cyc,cyc-c.cycles); atomic_fetch_add(&g_cum_sub_sys_ns,thr_sys_ns()-c.sys);
 }
+// DM_SUBPROF=<ms> (diagnostic): what a long submission was doing. While one replay of the queue worker (commands or a present) has run for longer than <ms>, a helper
+// thread takes the worker's stack every 0.4 ms (suspend, registers, frame-pointer chain, resume: nothing else between the two, so no lock the worker holds is asked for),
+// and when that replay ends the worker logs the stacks, innermost frame first, equal stacks in a row counted. A frame that takes 50 ms once in half a minute cannot be told
+// from the 2,000 ordinary ones in a sampler's totals; here only the long one is looked at, with the time into it of every stack
+#include <mach/mach.h>
+#include <dlfcn.h>
+#include <os/lock.h>
+enum { SP_DEPTH = 20, SP_MAX = 400 };
+static double sp_ms = -1; static _Atomic uint64_t sp_t0; static thread_act_t sp_port; static pthread_t sp_pth; static os_unfair_lock sp_lock = OS_UNFAIR_LOCK_INIT;
+static struct { uint32_t us, n; uint64_t pc[SP_DEPTH]; } sp_s[SP_MAX]; static int sp_n;
+static void *sp_main(void *unused) {
+    (void)unused; pthread_setname_np("submission profiler");
+    uint64_t limit = (uint64_t)(sp_ms * 1e6);
+    uintptr_t hi = (uintptr_t)pthread_get_stackaddr_np(sp_pth), lo = hi - pthread_get_stacksize_np(sp_pth);
+    for (;;) {
+        usleep(400);
+        uint64_t t0 = atomic_load(&sp_t0), now = now_ns();
+        if (!t0 || now < t0 || now - t0 < limit) continue;
+        os_unfair_lock_lock(&sp_lock);
+        if (atomic_load(&sp_t0) == t0 && sp_n < SP_MAX && thread_suspend(sp_port) == KERN_SUCCESS) {
+            arm_thread_state64_t st; mach_msg_type_number_t cnt = ARM_THREAD_STATE64_COUNT;
+            if (thread_get_state(sp_port, ARM_THREAD_STATE64, (thread_state_t)&st, &cnt) == KERN_SUCCESS) {
+                __typeof__(sp_s[0]) *x = &sp_s[sp_n++]; x->us = (uint32_t)((now - t0) / 1000); x->n = 0;
+                x->pc[x->n++] = (uint64_t)arm_thread_state64_get_pc(st); x->pc[x->n++] = (uint64_t)arm_thread_state64_get_lr(st);
+                uintptr_t fp = (uintptr_t)arm_thread_state64_get_fp(st);
+                while (x->n < SP_DEPTH && fp >= lo && fp + 16 <= hi && !(fp & 7)) {
+                    const uint64_t *f = (const uint64_t *)fp; if (!f[1]) break;
+                    x->pc[x->n++] = f[1]; if ((uintptr_t)f[0] <= fp) break; fp = (uintptr_t)f[0]; }
+            }
+            thread_resume(sp_port);
+        }
+        os_unfair_lock_unlock(&sp_lock);
+    }
+    return NULL;
+}
+static void sp_begin(void) {
+    if (sp_ms < 0) { const char *e = getenv("DM_SUBPROF"); sp_ms = e ? atof(e) : 0;
+        if (sp_ms > 0) { sp_port = mach_thread_self(); sp_pth = pthread_self(); pthread_t t; if (pthread_create(&t, NULL, sp_main, NULL)) sp_ms = 0; else { pthread_detach(t);
+            LOG("[subprof] stacks of the queue worker while a replay runs longer than %.1f ms (DM_SUBPROF)", sp_ms); } } }
+    if (sp_ms > 0) atomic_store(&sp_t0, now_ns());
+}
+static const char *sp_name(uint64_t pc, char *buf, size_t n) {
+    Dl_info di; if (dladdr((void *)(uintptr_t)pc, &di) && di.dli_sname) { snprintf(buf, n, "%s", di.dli_sname); return buf; }
+    snprintf(buf, n, "%#llx", (unsigned long long)pc); return buf;
+}
+static void sp_end(uint64_t frame) {
+    if (sp_ms <= 0) return;
+    uint64_t t0 = atomic_exchange(&sp_t0, 0);
+    os_unfair_lock_lock(&sp_lock); int n = sp_n; sp_n = 0; os_unfair_lock_unlock(&sp_lock);   // the helper takes no stack once sp_t0 has changed
+    if (!n || !t0) return;
+    LOG("[subprof] frame %llu: a replay of %.1f ms, %d stacks from %.1f ms on (innermost first; ms into the replay, stacks in a row)", (unsigned long long)frame, (now_ns() - t0) / 1e6, n, sp_s[0].us / 1e3);
+    for (int i = 0; i < n; ) {
+        int j = i + 1; while (j < n && sp_s[j].n == sp_s[i].n && !memcmp(sp_s[j].pc, sp_s[i].pc, sp_s[i].n * sizeof(uint64_t))) j++;
+        char line[1400]; size_t at = 0; char nm[160];
+        for (uint32_t k = 0; k < sp_s[i].n && at + 170 < sizeof line; k++) {
+            if (k == 1 && sp_s[i].n > 2 && sp_s[i].pc[1] == sp_s[i].pc[2]) continue;   // the link register is the first frame record's return address in a function that has made its frame
+            at += (size_t)snprintf(line + at, sizeof line - at, "%s%s", at ? " < " : "", sp_name(sp_s[i].pc[k], nm, sizeof nm)); }
+        LOG("[subprof]   %6.1f ms x%-3d %s", sp_s[i].us / 1e3, j - i, line);
+        i = j;
+    }
+}
 static void *nq_worker(void *unused) {
     (void)unused; pthread_setname_np("NVN queue replay");
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE,0);
@@ -156,7 +217,7 @@ static void *nq_worker(void *unused) {
         if(n->kind==NQ_COMMANDS || n->kind==NQ_PRESENT) {
             dm_host_mutex_lock(&g_sub_mu); void *pool=objc_autoreleasePoolPush();
             dm_host_work++; mtl_prepare(); dm_host_work--;
-            gfx_enter(); nq_cost cost=nq_cost_begin();
+            gfx_enter(); nq_cost cost=nq_cost_begin(); sp_begin();
             if(frame!=j->frame) { frame=j->frame; mtl_set_frame(frame); }
             mtl_queue_activate(q->serial); mtl_set_queue_origin_lower_left(q->origin);
             if(n->kind==NQ_COMMANDS) {
@@ -168,7 +229,7 @@ static void *nq_worker(void *unused) {
                 nvn_cap_present(&n->texture,n->crop);
                 present=mtl_present(&n->texture,n->period,n->crop,&copy); mtl_tex_unpin(n->texture.serial);
             }
-            nq_cost_end(cost); gfx_leave(); objc_autoreleasePoolPop(pool); pthread_mutex_unlock(&g_sub_mu);
+            sp_end(frame); nq_cost_end(cost); gfx_leave(); objc_autoreleasePoolPop(pool); pthread_mutex_unlock(&g_sub_mu);
         }
         pthread_mutex_lock(&nq_mu); if(n->kind==NQ_PRESENT) { q->present=present; q->copy=copy; j->receipt->present=present; j->receipt->copy=copy; } if(fence) { q->physical=fence; for(unsigned i=0;i<n->signal_count;i++) nq_event_issued(n->signals[i].event,fence,n->signals[i].mode,n->signals[i].value); } if(n->receipt) nq_put(n->receipt); free(n->signals); free(n->bytes); free(n); pthread_cond_broadcast(&nq_cv); pthread_mutex_unlock(&nq_mu);
     }
