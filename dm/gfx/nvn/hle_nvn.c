@@ -2616,7 +2616,9 @@ _Static_assert(sizeof(map_req) == 0x28, "NVNmappingRequest");
 // mapping) and the later mappings were refused (`[RED] MapVirtual: non-contiguous mapping`). A pool larger than the application pool is sparse from the start
 enum { NVRUN = 1024, VPT_LEAF = 512 };   // a page-table leaf covers 2 MB
 typedef struct { const uint8_t *phys; uint64_t gen; } vpte;
-struct vpool { const pool_t *pool; uint8_t *base; uint64_t len, size, top; int nrun; struct { uint64_t lo, hi; } run[NVRUN]; vpte **pt; struct vlog_ent *log; _Atomic uint64_t nlog; };   // len: reserved; size: the pool's; top: highest mapped end so far (logged per 128 MB)
+struct vpool { const pool_t *pool; uint8_t *base; uint64_t len, size, top; int nrun; struct { uint64_t lo, hi; } run[NVRUN]; vpte **pt; struct vlog_ent *log; _Atomic uint64_t nlog;   // len: reserved; size: the pool's; top: highest mapped end so far (logged per 128 MB)
+               struct { uint64_t lo, hi; } *phys; int nphys, cphys, phys_all; };   // phys: the storage of the physical pools it has mapped pages of, kept while it lives (nvn_sparse_shares); phys_all: more than VPHYS_MAX of them
+enum { VPHYS_MAX = 256 };
 struct vlog_ent { uint64_t off, len; };   // a mapping request: the pool's change log (nvn_sparse_log_read), kept once a placement sparse texture asks for it
 enum { VLOG_N = 4096 };
 static struct vpool **g_vp; static int g_nvp, g_cvp;   // the pools with a range of their own, under g_vp_mu
@@ -2650,7 +2652,7 @@ static void vpool_drop(pool_t *o) {   // caller holds g_vp_mu
     munmap(v->base, v->len);
     for (uint64_t l = 0; l < (v->size + (2u << 20) - 1) >> 21; l++) free(v->pt[l]);
     for (int i = 0; i < g_nvp; i++) if (g_vp[i] == v) { g_vp[i] = g_vp[--g_nvp]; break; }
-    free(v->pt); free(v->log); free(v); o->vp = NULL;
+    free(v->pt); free(v->log); free(v->phys); free(v); o->vp = NULL;
 }
 static void vpool_release(pool_t *o) { pthread_mutex_lock(&g_vp_mu); vpool_drop(o); pthread_mutex_unlock(&g_vp_mu); }
 // Mapped runs of a sparse pool: [lo, hi) sorted, disjoint, adjacent runs merged. Caller holds g_vp_mu
@@ -2688,6 +2690,15 @@ static int vpool_map(struct vpool *v, const map_req *r) {   // caller holds g_vp
     const pool_t *ph = (const pool_t *)r->phys;
     if (ph && (!ph->mem || r->poff < 0 || (uint64_t)r->poff + r->size > ph->size)) { LOG("[RED] virtual pool %p: physical pool %p (%#llx bytes, storage %p) cannot supply %#llx+%#llx", (const void *)v->pool, (const void *)ph, (unsigned long long)ph->size, (void *)ph->mem, (unsigned long long)r->poff, (unsigned long long)r->size); return 0; }
     vpt_set(v, (uint64_t)r->voff, r->size, ph ? ph->mem + r->poff : NULL);
+    if (ph) {   // the storage this pool's pages can lie in from now on
+        uint64_t lo = (uint64_t)(uintptr_t)ph->mem, hi = lo + ph->size; int k = 0;
+        while (k < v->nphys && !(v->phys[k].lo <= lo && hi <= v->phys[k].hi)) k++;
+        if (k == v->nphys && v->nphys == VPHYS_MAX) v->phys_all = 1;
+        else if (k == v->nphys) {
+            if (v->nphys == v->cphys && !(v->phys = realloc(v->phys, (size_t)(v->cphys = v->cphys ? 2 * v->cphys : 8) * sizeof *v->phys))) die("sparse pool storage ranges allocation failed");
+            v->phys[v->nphys].lo = lo; v->phys[v->nphys++].hi = hi;
+        }
+    }
     vm_address_t to = (vm_address_t)(v->base + r->voff);
     // Not aliased (see above): only textures read through the page table see it; the GPU cannot address it directly
     if ((uint64_t)r->voff + r->size > v->len || ((uintptr_t)to | r->size | (uint64_t)r->voff) & (pg - 1) || (ph && (((uintptr_t)ph->mem + (uintptr_t)r->poff) & (pg - 1)))) {
@@ -3158,6 +3169,21 @@ int nvn_sparse_alias(uint64_t lo, uint64_t hi) {
         uint64_t base = (uint64_t)(uintptr_t)v->base;
         r = lo < base + v->len && base < hi;
     }
+    pthread_mutex_unlock(&g_vp_mu); return r;
+}
+// Whether two guest ranges can hold the same memory through a sparse pool's page table, their own addresses apart: two ranges in sparse pools may share any page; one in a sparse
+// pool and one outside share memory only where that pool has mapped pages of the physical pool the other lies in (v->phys: the storage of every pool it has mapped from, kept
+// while it lives, so an unmapping takes nothing back); two outside share none. SPARSE_SHARES_NOTE
+int nvn_sparse_shares(uint64_t alo, uint64_t ahi, uint64_t blo, uint64_t bhi) {
+    if (ahi <= alo || bhi <= blo) return 0;
+    const struct vpool *va = NULL, *vb = NULL; int na = 0, nb = 0, r = 0;
+    pthread_mutex_lock(&g_vp_mu);
+    for (int k = 0; k < g_nvp; k++) { const struct vpool *v = g_vp[k]; uint64_t base = (uint64_t)(uintptr_t)v->base;
+        if (alo < base + v->len && base < ahi) { va = v; na++; }
+        if (blo < base + v->len && base < bhi) { vb = v; nb++; } }
+    if ((na && nb) || na > 1 || nb > 1) r = 1;
+    else if (na || nb) { const struct vpool *v = na ? va : vb; uint64_t lo = na ? blo : alo, hi = na ? bhi : ahi;
+        r = v->phys_all; for (int i = 0; i < v->nphys && !r; i++) r = lo < v->phys[i].hi && v->phys[i].lo < hi; }
     pthread_mutex_unlock(&g_vp_mu); return r;
 }
 // Textures of a sparse pool, read through its page table (see the sparse pools above): whether a pool is one, a copy of a texture's bytes (unmapped pages read as 0; → bytes not mapped),

@@ -1724,6 +1724,7 @@ static void drw_drained(void) { g_drain_sub = g_sub_serial; g_drain_other = g_wr
 static int drw_valid(void) { return g_drain_sub == g_sub_serial && !g_drw_over && g_wr_epoch - g_wr_geo == g_drain_other; }
 static int drw_hits(uint64_t lo, uint64_t n) { for (int i = 0; i < g_ndrw; i++) if (lo < g_drw_hi[i] && g_drw_lo[i] < lo + n) return 1; return 0; }
 int nvn_sparse_alias(uint64_t lo, uint64_t hi);   // hle_nvn.c: a sparse guest range may alias another pool at a different address
+int nvn_sparse_shares(uint64_t alo, uint64_t ahi, uint64_t blo, uint64_t bhi);   // hle_nvn.c: two guest ranges can hold the same memory through a sparse pool's page table
 static id<MTL4ComputeCommandEncoder> blit_buf(uint64_t rlo, uint64_t rhi, uint64_t wlo, uint64_t whi) {
     g_wr_epoch++;
     g_blit_alias = 1;   // before blit_raw, so an encoder it opens starts with alias visibility
@@ -12088,7 +12089,7 @@ static int tex_storage_overlap(const tex_t *a, const tex_t *b) {
     if (!a->mem || !b->mem) return 0;
     uint64_t x = (uint64_t)a->mem, y = (uint64_t)b->mem;
     if (!a->L.size || !b->L.size || a->L.size > UINT64_MAX - x || b->L.size > UINT64_MAX - y) return 1;
-    return (x < y + b->L.size && y < x + a->L.size) || nvn_sparse_alias(x, x + a->L.size) || nvn_sparse_alias(y, y + b->L.size);
+    return (x < y + b->L.size && y < x + a->L.size) || nvn_sparse_shares(x, x + a->L.size, y, y + b->L.size);
 }
 static int g_samples_fb_left;   // draw_samples_rt: a fragment texture that is a colour attachment does not count: fb_prepare answers for it, as for any draw of a pass
 static int g_dsr_why;   // why draw_samples_rt said yes, for the pass dump: 1 no program; 20 + stage: its reflection has bindless or dynamic handles; 30 + stage: a binding of unknown kind; 40 + stage: a texture not registered; 50 + stage: an attachment's texture; 60 + stage: storage an attachment overlaps

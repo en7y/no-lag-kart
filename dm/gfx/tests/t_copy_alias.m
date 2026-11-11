@@ -40,6 +40,42 @@ static void separate_buffers(void) {
     }
     res_remove(a); res_remove(b); res_remove(io); a = b = nil; munmap(mem, pg);
 }
+// A texture of a sparse pool shares storage with one outside sparse pools only where its pool has mapped pages of the physical pool the other lies in (tex_storage_overlap)
+static void sparse_shares(void) {
+    const size_t len = 4 * getpagesize();
+    uint8_t *m1 = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0), *m2 = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+    if (m1 == MAP_FAILED || m2 == MAP_FAILED) abort();
+    pool_t p1, p2, sparse;
+    pool_builder_t pb = {.mem=m1, .size=len, .flags=0x24};
+    CHECK(h_nvnMemoryPoolInitialize((NVNmemoryPool *)&p1, (const NVNmemoryPoolBuilder *)&pb), "first physical pool initialized");
+    pb.mem = m2;
+    CHECK(h_nvnMemoryPoolInitialize((NVNmemoryPool *)&p2, (const NVNmemoryPoolBuilder *)&pb), "second physical pool initialized");
+    pb = (pool_builder_t){.size=DM_GAME_APP_POOL + 2 * len, .flags=0x200};
+    CHECK(h_nvnMemoryPoolInitialize((NVNmemoryPool *)&sparse, (const NVNmemoryPoolBuilder *)&pb), "sparse pool initialized");
+    tex_t ts = {0}, ts2 = {0}, t1 = {0}, t2 = {0};
+    ts.serial = 99901; ts.pool = &sparse; ts.mem = sparse.mem; ts.L.size = len;
+    ts2 = ts; ts2.serial = 99902; ts2.mem = sparse.mem + len;
+    t1.serial = 99903; t1.pool = &p1; t1.mem = m1 + 256; t1.L.size = 1024;
+    t2.serial = 99904; t2.pool = &p2; t2.mem = m2 + 256; t2.L.size = 1024;
+    CHECK(!tex_storage_overlap(&ts, &t1) && !tex_storage_overlap(&t1, &ts), "a sparse pool with nothing mapped shares no storage");
+    map_req one = {.phys=(NVNmemoryPool *)&p1, .size=len};
+    CHECK(h_nvnMemoryPoolMapVirtual((NVNmemoryPool *)&sparse, 1, (const NVNmappingRequest *)&one), "pages of the first pool mapped");
+    CHECK(tex_storage_overlap(&ts, &t1) && tex_storage_overlap(&t1, &ts), "a sparse texture and one in the physical pool its pool has pages of may share storage");
+    CHECK(tex_storage_overlap(&ts2, &t1), "whatever part of the sparse pool it lies in");
+    CHECK(!tex_storage_overlap(&ts, &t2) && !tex_storage_overlap(&t2, &ts), "a sparse texture and one in a pool its pool has no page of share none");
+    CHECK(!tex_storage_overlap(&t1, &t2), "two textures of different physical pools share none");
+    CHECK(tex_storage_overlap(&ts, &ts2), "two textures in sparse pools may share any page");
+    map_req two = {.phys=(NVNmemoryPool *)&p2, .voff=len, .size=len};
+    CHECK(h_nvnMemoryPoolMapVirtual((NVNmemoryPool *)&sparse, 1, (const NVNmappingRequest *)&two), "pages of the second pool mapped");
+    CHECK(tex_storage_overlap(&ts, &t2) && tex_storage_overlap(&t2, &ts), "once the pool has pages of the second pool they may share storage");
+    map_req gone = {.voff=len, .size=len};
+    CHECK(h_nvnMemoryPoolMapVirtual((NVNmemoryPool *)&sparse, 1, (const NVNmappingRequest *)&gone), "those pages unmapped");
+    CHECK(tex_storage_overlap(&ts, &t2), "an unmapping takes nothing back");
+    h_nvnMemoryPoolFinalize((NVNmemoryPool *)&sparse);
+    CHECK(!tex_storage_overlap(&ts, &t2) && !tex_storage_overlap(&ts, &t1), "with the sparse pool finalized its range is one like any other");
+    h_nvnMemoryPoolFinalize((NVNmemoryPool *)&p1); h_nvnMemoryPoolFinalize((NVNmemoryPool *)&p2);
+    munmap(m1, len); munmap(m2, len);
+}
 static void sparse_copies(void) {
     const size_t n = 256, len = 4 * getpagesize();
     uint8_t *mem = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
@@ -116,6 +152,6 @@ static void shader_alias(void) {
     atomic_fetch_sub(&g_big_n, 1); res_remove(a); res_remove(b); res_remove(io); res_remove(seed); a = b = nil; munmap(mem, pg);
 }
 int main(void) { @autoreleasepool {
-    mtl_init(); separate_buffers(); sparse_copies(); shader_alias();
+    mtl_init(); separate_buffers(); sparse_copies(); sparse_shares(); shader_alias();
     printf("t_copy_alias: %d checks, %d failed\n", checks, failed); return failed != 0;
 } }
