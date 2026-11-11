@@ -119,6 +119,7 @@ static void nq_cost_end(nq_cost c) {
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
 #include <dlfcn.h>
+#include <os/lock.h>
 enum { SP_DEPTH = 20, SP_MAX = 400, SP_ODEPTH = 12, SP_OMAX = 512 };
 typedef struct { uint32_t n; uint64_t tid, pc[SP_ODEPTH]; char name[32]; } sp_stack;   // another thread's
 static double sp_ms = -1; static int sp_all; static _Atomic uint64_t sp_t0; static uint64_t sp_acc, sp_frame = ~0ull; static thread_act_t sp_port; static pthread_t sp_pth;
