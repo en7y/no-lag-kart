@@ -1,0 +1,8 @@
+# Benchmark routes for scripts/bench.py: name, DM_KEYS (seconds from host start), measuring window start and length (s), description.
+# From a save that is past the first-start screens (play to the main menu once, quit: the save stays in <build>/run/save). gp-race1 is smoke.tsv's route, written on the
+# base game on a 16 GB M6: the title, A through Single Player, Grand Prix, the character, the kart, the Mushroom Cup, 50cc and "Start Grand Prix?" (the cup's opening movie
+# starts at about 56 s), A held to drive from 120 s. On 1.8.0 a run on an M4 Max reached the race at about 195 s (pull request #2064), so the windows here start at 215 s.
+# Not yet run on an M2 Pro: check the two screenshots of a first run (is it the race?) before trusting any number, and move the window if loading takes longer here.
+gp-race1	28:A*12/2,120:A~9.5*14/10	215	40	Grand Prix, Mushroom Cup, 50cc on 1.8.0: the first race, driven by holding A
+gp-race1-long	28:A*12/2,120:A~9.5*26/10	215	160	the same race for 160 s: hitches and memory over a whole race
+title		90	30	the title's 3D scene with no input
