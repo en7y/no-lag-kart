@@ -6,12 +6,14 @@
 #   ARCH=prebuilt   the probe's archive starts as the pack's prebuilt files alone (default; no run files, so no compaction)
 #   ARCH=all        it starts as a copy of the build's whole archive without the "compacting" marker (more than 8 run files in it: a compacting start)
 #   ARCH=empty      it starts empty
+#   ARCH=<folder>   it starts as a copy of that archive folder (a path with a slash)
 #   WORK=<folder>   work folder (default /tmp/mkw-probe/<time>); AFTER=<s> run this long after the prepare step (default 25, time for the archive's flush)
 #   TIMEOUT=<s>     give up after this long (default 1800); HOST=<path> another host; KEEP=1 keeps the probe's archive (default: removed, the log stays)
 # The copies are APFS clones (cp -c): they take no disk space until they change.
 set -eu
-[ $# -ge 1 ] || { sed -n '2,12p' "$0"; exit 2; }
+[ $# -ge 1 ] || { sed -n '2,13p' "$0"; exit 2; }
 LIST=$(cd "$(dirname "$1")" && pwd)/$(basename "$1"); shift
+for kv in "$@"; do export "$kv"; done   # the script's own settings (ARCH, WORK, HOST, KEEP ...) are read from here on; exported again below, over the settings file
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 ID=0400C3F00006E000
 DUMP="${MKW_DUMP:-$ROOT/../MarioKartWorld}"
@@ -27,7 +29,9 @@ case "${ARCH:-prebuilt}" in
   prebuilt) for f in "$B"/run/pso_archive/p[0-9]*.mtl4a "$B"/run/pso_archive/p[0-9]*.keys "$B"/run/pso_archive/prebuilt.tsv; do cp -c "$f" "$WORK/pso_archive/"; done;;
   all) for f in "$B"/run/pso_archive/*.mtl4a "$B"/run/pso_archive/*.keys "$B"/run/pso_archive/prebuilt.tsv; do cp -c "$f" "$WORK/pso_archive/"; done;;
   empty) ;;
-  *) echo "ARCH: prebuilt, all or empty"; exit 2;;
+  */*) [ -d "$ARCH" ] || { echo "ARCH: no such folder: $ARCH"; exit 2; }
+       for f in "$ARCH"/*.mtl4a "$ARCH"/*.keys "$ARCH"/prebuilt.tsv; do if [ -e "$f" ]; then cp -c "$f" "$WORK/pso_archive/"; fi; done;;
+  *) echo "ARCH: prebuilt, all, empty or a folder"; exit 2;;
 esac
 LOG="$WORK/log.txt"
 export DM_ROOT="$B" DM_ROMFS="$B/extract/$VER/RomFS.img" DM_SAVE="$WORK/save" DM_TEMP="$WORK/temp" DM_MSL_DIR="$B/shader/cache" DM_FONT_DIR="$B/font"

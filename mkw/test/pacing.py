@@ -5,6 +5,8 @@
 #   sub cpu     the host's translation of the frame's submissions, CPU p50 / p95      rt MB   render-target megabytes stored per frame, p50: follows the game's dynamic resolution
 #   work        the game's time from one present to its next present call, p50 / p95      slack   how long the game waited for its display tick at the acquire, p50;
 #   no slack    the share of frames that waited under 0.5 ms: they had nothing to spare
+#   gpu end     the frame's last GPU end, counted from the present call before its submission, p50 / p95: the game waits for it (its fence) and presents right after,
+#               so a frame is on time while this stays under the 16.7 ms of a refresh      fence   the game's wait on that fence, p50
 #   covered     the window was hidden at some time in the run (display asleep, screen saver): its on-screen numbers mean nothing
 # Usage: mkw/test/pacing.py <bench folder> [--from 110] [--secs 90]      (the window of the route the folder was measured with; gp-race1: 110, 90)
 import argparse, math, pathlib, sys
@@ -12,7 +14,7 @@ ap = argparse.ArgumentParser(); ap.add_argument('folder'); ap.add_argument('--fr
 def pct(xs, p):
     if not xs: return float('nan')
     s = sorted(xs); return s[min(len(s) - 1, max(0, math.ceil(p / 100 * len(s)) - 1))]
-print(f'{"run":<14}{"fps":>6}{"late/min":>9}{"shown p50/p99":>15}{"gpu p50/p95/p99":>20}{"span p50/p95":>14}{"sub cpu p50/p95":>17}{"work p50/p95":>14}{"slack p50":>10}{"no slack":>9}{"rt MB":>7}{"draws":>7}  notes')
+print(f'{"run":<14}{"fps":>6}{"late/min":>9}{"shown p50/p99":>15}{"gpu p50/p95/p99":>20}{"span p50/p95":>14}{"sub cpu p50/p95":>17}{"work p50/p95":>14}{"slack p50":>10}{"no slack":>9}{"rt MB":>7}{"draws":>7}{"gpu end p50/p95":>17}{"fence":>7}  notes')
 for d in sorted(p for p in pathlib.Path(a.folder).iterdir() if (p / 'frames.tsv').exists()):
     rows = {}
     for ln in open(d / 'frames.tsv', errors='replace'):
@@ -26,6 +28,7 @@ for d in sorted(p for p in pathlib.Path(a.folder).iterdir() if (p / 'frames.tsv'
     shown, gpu = col('@presented_ms', 0), col('@gpu_ms', -0.5)
     span = [r['@gpu_end_ms'] - r['@gpu_beg_ms'] for r in sel if '@gpu_end_ms' in r and '@gpu_beg_ms' in r and r['@gpu_end_ms'] > r['@gpu_beg_ms'] > 0]
     late = sum(1 for x in shown if x >= 25)
+    end = [r['@gpu_end_ms'] - r['@call_ms'] for r in sel if '@gpu_end_ms' in r and '@call_ms' in r and r['@gpu_end_ms'] > r['@call_ms'] > 0]
     wait = col('@wait_ms')
     log = (d / 'log.txt').read_text(errors='replace') if (d / 'log.txt').exists() else ''
     notes = []
@@ -35,4 +38,4 @@ for d in sorted(p for p in pathlib.Path(a.folder).iterdir() if (p / 'frames.tsv'
     if pso: notes.append(f'{pso} frames built a pipeline')
     print(f'{d.name:<14}{len(sel) / a.secs:>6.1f}{late * 60 / a.secs:>9.1f}{pct(shown, 50):>8.1f}/{pct(shown, 99):<6.1f}{pct(gpu, 50):>8.2f}/{pct(gpu, 95):.2f}/{pct(gpu, 99):<6.2f}'
           f'{pct(span, 50):>7.1f}/{pct(span, 95):<6.1f}{pct(col("@sub_cpu_ms"), 50):>9.2f}/{pct(col("@sub_cpu_ms"), 95):<7.2f}{pct(col("@work_ms"), 50):>7.1f}/{pct(col("@work_ms"), 95):<6.1f}'
-          f'{pct(wait, 50):>10.2f}{100 * sum(1 for x in wait if x < 0.5) / max(1, len(wait)):>8.0f}%{pct(col("@rt_store_mb"), 50):>7.0f}{pct(col("@draws"), 50):>7.0f}  {", ".join(notes)}')
+          f'{pct(wait, 50):>10.2f}{100 * sum(1 for x in wait if x < 0.5) / max(1, len(wait)):>8.0f}%{pct(col("@rt_store_mb"), 50):>7.0f}{pct(col("@draws"), 50):>7.0f}{pct(end, 50):>10.2f}/{pct(end, 95):<6.2f}{pct(col("@sync_ms"), 50):>7.2f}  {", ".join(notes)}')
