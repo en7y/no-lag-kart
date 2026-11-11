@@ -598,6 +598,7 @@ static id<MTLRenderPipelineState> mtk_build(const pso_key *k, NvShader *ts, NvSh
     id<MTLFunction> ff = d.fragmentFunction ?: mtk_nop_fragment();
     pso4_init();
     MTL4MeshRenderPipelineDescriptor *m4 = g_comp4 ? mtk_desc4(d, ts, ms, ff, k->border) : nil;
+    if (m4 && k->mesh_amp) m4.maxVertexAmplificationCount = 2;   // a slice-merged pass's pipeline (mtk_amp_get): a pipeline of its own in the archive, whose key counts the amplification
     if (m4) {
         id<MTLRenderPipelineState> ps = nil; int from_run = 0;
         ps = arch_lookup(m4, 0, &from_run);   // a period of mesh pipelines alone is a p file (no vertex layout)
@@ -613,6 +614,7 @@ static id<MTLRenderPipelineState> mtk_build(const pso_key *k, NvShader *ts, NvSh
     m.rasterSampleCount = d.rasterSampleCount; m.alphaToCoverageEnabled = d.alphaToCoverageEnabled;
     for (int i = 0; i < 8; i++) m.colorAttachments[i] = d.colorAttachments[i];
     m.depthAttachmentPixelFormat = d.depthAttachmentPixelFormat; m.stencilAttachmentPixelFormat = d.stencilAttachmentPixelFormat;
+    if (k->mesh_amp) m.maxVertexAmplificationCount = 2;
     id<MTLRenderPipelineState> ps = [g_dev newRenderPipelineStateWithMeshDescriptor:m options:MTLPipelineOptionNone reflection:nil error:error];
     if (ps) { if (m4) { g_mtk_built++; arch_harvest(m4, 0); } else g_mtk_dev++; }
     return ps;
@@ -627,13 +629,37 @@ static void mtk_claim(pso_key *k, NvShader *ts, NvShader *ms, NvShader *fs, id<M
     id current = hm_get_id(&g_pso_mtk, k);
     if (!current || current == NSNull.null) hm_put_id(&g_pso_mtk, k, ps);
 }
-static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
+// The native mesh pipelines of slice-merged passes (g_sm_plan, nvn_mtl.m): the draw's pipeline built with maxVertexAmplificationCount 2, its key marked mesh_amp. As for a vertex
+// pipeline (sm_amp_get), the view mapping that sends a draw to its layer is ignored by a mesh pipeline built with the default 1: every draw then lands in the pass's first layer.
+// Built in the background on first use, and taken from the pipeline archive on later starts (mtk_build); until it is there the draw gets nil and goes to a pass of its own
+// (sm_plan does not merge, draw_ splits a merged pass), so no frame waits for the compiler. A failed build is not tried again
+enum { SM_MAMP_MAX = 64 };
+static struct { pso_key k; id<MTLRenderPipelineState> ps; int done; } g_sm_mamp[SM_MAMP_MAX]; static int g_sm_mamp_n; static os_unfair_lock g_sm_mamp_lock = OS_UNFAIR_LOCK_INIT;
+static id<MTLRenderPipelineState> mtk_amp_get(const pso_key *k, NvShader *ts, NvShader *ms, NvShader *fs) {
+    os_unfair_lock_lock(&g_sm_mamp_lock); int i = 0; for (; i < g_sm_mamp_n; i++) if (!memcmp(&g_sm_mamp[i].k, k, sizeof *k)) break;   // NOLINT(bugprone-suspicious-memory-comparison): pso_key_fill zeroes the whole key
+    if (i < g_sm_mamp_n) { id<MTLRenderPipelineState> ps = g_sm_mamp[i].done ? g_sm_mamp[i].ps : nil; os_unfair_lock_unlock(&g_sm_mamp_lock); return ps; }
+    if (g_sm_mamp_n >= SM_MAMP_MAX) { os_unfair_lock_unlock(&g_sm_mamp_lock); return nil; }
+    g_sm_mamp[i].k = *k; g_sm_mamp[i].ps = nil; g_sm_mamp[i].done = 0; g_sm_mamp_n++; os_unfair_lock_unlock(&g_sm_mamp_lock);
+    pso_key kk = *k;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ NSError *e = nil; id<MTLRenderPipelineState> ps = mtk_build(&kk, ts, ms, fs, &e, NULL);
+        if (!ps) MLOG("[RED] slice-merged pass: no amplified pipeline for task %s mesh %s fragment %s: %s (those passes stay apart)", ts ? ts->key : "-", ms->key, fs ? fs->key : "-", e ? e.localizedDescription.UTF8String : "invalid depth / stencil formats");
+        os_unfair_lock_lock(&g_sm_mamp_lock); g_sm_mamp[i].ps = ps; g_sm_mamp[i].done = 1; os_unfair_lock_unlock(&g_sm_mamp_lock); });
+    return nil;
+}
+// amp: the pipeline of a draw in a slice-merged pass (mtk_amp_get), nil while it is being built
+static id<MTLRenderPipelineState> mtk_pso(NvProg *raster, int amp) {
     if (!raster || !g_mtk.ms || !g_mtk.ms->fn) return nil;
     NvShader *ts = g_mtk.ts, *ms = g_mtk.ms, *fs = raster->sh[1];
     pso_key k; pso_key_fill(&k, ms, fs, g_pass.cfmt, g_pass.dfmt, g_pass.sfmt, g_pass.samples, 0);
     k.border |= border_need(ts, 3);
     memset(k.attr, 0, sizeof k.attr); memset(k.attr_hi, 0, sizeof k.attr_hi); memset(k.stream, 0, sizeof k.stream);
     mtk_bind_key(&k, ts, ms, fs);
+    if (amp) {
+        k.mesh_amp = 1;
+        id<MTLRenderPipelineState> a = hm_get_id(&g_pso_mtk, &k); if (a) return a;
+        a = mtk_amp_get(&k, ts, ms, fs); if (a) hm_put_id(&g_pso_mtk, &k, a);
+        return a;
+    }
     id ps = hm_get_id(&g_pso_mtk, &k);
     if (ps) return ps == NSNull.null ? nil : ps;
     NSError *error = nil; uint64_t start = bp_now(); int archived = 0;

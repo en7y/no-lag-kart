@@ -11921,20 +11921,24 @@ static int sm_scan(const uint8_t *p, const p_set_rt *rt, int cur, int *lo, int *
             case OP_BARRIER: { int32_t bits; memcpy(&bits, a, 4); if (bits) return n; break; }
             case OP_UPDATE_UB: if (!ubd_on()) return n; break;
             case OP_DRAW: case OP_DRAW_IDX: case OP_VIEWPORTS: case OP_SCISSOR: case OP_DEPTH_RANGE: case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM:
-            case OP_BIND_VBUF: case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_TEX1: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_STENCIL: case OP_POLY_OFFSET:
+            case OP_BIND_VBUF: case OP_BIND_VBUF1: case OP_BIND_UBO: case OP_BIND_UBO_SMALL: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_TEX1: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_STENCIL: case OP_POLY_OFFSET:
             case OP_BLEND_COLOR: case OP_ALPHA_REF: case OP_PUSH_CONST: case OP_DEPTH_CLAMP: case OP_VP_SWIZZLE: case OP_PRIM_RESTART: case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: case OP_COPY_STRIDE: break;
-            default: return n;
+            default: if (n) PD("L %llu slice-merged pass: the plan ends at operation %u after %d layer switches", g_stat_pass + 1, (unsigned)h.op, n); return n;
         }
         p += h.size;
     }
     return n;
 }
 // The draw about to open a pass: plan it as slice-merged when its target is one layer of an array or cube texture level and the next targets switch to other layers of that level
-// (every layer between the lowest and the highest drawn into), and the draw's amplified pipeline is built (else it is queued, and this pass stays as it is)
+// (every layer between the lowest and the highest drawn into), and the draw's amplified pipeline is built (else it is queued, and this pass stays as it is).
+// mesh: a task / mesh draw (mesh_tasks_draw), whose pr is its pixel stage alone. Its native mesh pipeline takes the view mapping as a vertex pipeline does (mtk_amp_get), and
+// what its task and mesh shaders sample is looked up in the bound program
 static int draw_samples_rt(NvProg *pr);
-static void sm_plan(NvProg *pr) {
+static id<MTLRenderPipelineState> mtk_pso(NvProg *raster, int amp);
+static void sm_plan(NvProg *pr, int mesh) {
     g_sm_plan.on = 0;
-    if (!pr || !pr->sh[0] || pr->sh[0]->layer_out || R.clear_d || R.clear_s || draw_samples_rt(pr)) return;
+    if (!pr || R.clear_d || R.clear_s) return;
+    if (mesh ? draw_samples_rt(S.prog ? prog_get(S.prog) : nil) : !pr->sh[0] || pr->sh[0]->layer_out || draw_samples_rt(pr)) return;
     for (int i = 0; i < 8; i++) if (R.clear_c[i]) return;
     int cur; if (!sm_rt_slice(&R.rt, &R.rt, &cur) || cur >= 64) return;
     id<MTLTexture> t = tex_mtl(R.rt.color[0]);
@@ -11942,7 +11946,7 @@ static void sm_plan(NvProg *pr) {
     int lo, hi; uint64_t mask; if (!sm_scan(g_exec_next, &R.rt, cur, &lo, &hi, &mask)) return;
     if (__builtin_popcountll(mask) != hi - lo + 1 || (NSUInteger)hi >= t.arrayLength * (t.textureType == MTLTextureType2DArray ? 1 : 6)) return;
     __typeof__(g_pass) keep = g_pass; memset(g_pass.cfmt, 0, sizeof g_pass.cfmt); g_pass.cfmt[0] = (uint32_t)t.pixelFormat; g_pass.dfmt = g_pass.sfmt = 0; g_pass.samples = 1;   // the key pso_get makes in the pass
-    g_pso_amp = 1; id ps = pso_get(pr, nil); g_pso_amp = 0; g_pass = keep;
+    g_pso_amp = 1; id ps = mesh ? mtk_pso(pr, 1) : pso_get(pr, nil); g_pso_amp = 0; g_pass = keep;
     if (!ps) { g_sm_nwait++; return; }
     g_sm_plan.on = 1; g_sm_plan.lo = lo; g_sm_plan.hi = hi;
 }
@@ -13997,6 +14001,7 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
         NvProg *geometry_program = prog_get(S.prog);
         if (geometry_program && geometry_program->sh[2] && geometry_program->sh[2]->geo_vertices) {
             if ((dw && dw->mdi_cnt && !mdi_live(dw->mdi_cnt, dw->mdi_i)) || (di && di->mdi_cnt && !mdi_live(di->mdi_cnt, di->mdi_i))) return;
+            if (g_enc && g_sm_pass) { PD("M %llu a geometry-stage draw ends the slice-merged pass (its pipelines take no view mapping)", g_stat_pass); rp_end(); }
             image_prepare(geometry_program, (1u << 0) | (1u << 2));
             geo_draw(geometry_program, dw, di, 0); return;
         }
@@ -14079,8 +14084,8 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
     if (!g_enc) { g_fd_dw = dw; g_fd_di = di; }
     g_rp_layered = pr->sh[0] && pr->sh[0]->layer_out;
     if (g_enc && g_pass.layered != g_rp_layered) rp_end();   // a layered pass only for layer-writing vertex shaders (see rp_begin_ex)
-    if (g_enc && g_sm_pass && draw_samples_rt(pr)) { PD("M %llu a draw in the slice-merged pass samples its attachment; split here", g_stat_pass); rp_end(); }
-    if (!g_enc && mode == 0 && !g_rp_layered && !defer_q_draw && g_exec_next && !tbdr_on() && !g_geo_program && sm_on()) sm_plan(pr);
+    if (g_enc && g_sm_pass && draw_samples_rt(g_mtk.on && S.prog ? prog_get(S.prog) : pr)) { PD("M %llu a draw in the slice-merged pass samples its attachment; split here", g_stat_pass); rp_end(); }   // a task / mesh draw: its task and mesh stages too
+    if (!g_enc && mode == 0 && !g_rp_layered && !defer_q_draw && g_exec_next && !tbdr_on() && (!g_geo_program || g_mtk.on) && sm_on()) sm_plan(pr, g_mtk.on);
     vbuf_prepare(pr->sh[0] ? &pr->sh[0]->rf : NULL, dw, di);   // an unaligned GPU-written stream, or one the draw reads past, needs its ordered copy before the render encoder
     id<MTLRenderCommandEncoder> en = rp_begin_ex(mode);
     g_rp_layered = 0; g_sm_plan.on = 0;
@@ -14102,7 +14107,13 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
     static id<MTLRenderPipelineState> cur_ps; static NvProg *cur_pr; static uint64_t cur_ps_pass; static int cur_pull;   // cur_pull: a hybrid (pulling) pipeline, asked for again at the next draw
     if (g_fz.active && !g_defer_replaying) { g_pso_lmap = g_fz.phase == 1 ? g_fz.lmap1 : g_fz.lmap2; g_pso_fsfn = g_fz.phase == 1 ? nil : fz_fn; g_pso_fz = g_fz.phase == 1 ? (pso_fz_desc){0} : g_fz_desc; g_pso_dirty = 1; }   // Readable tile merge: fetch the pipeline by the physical -> logical mapping and the specialization
     else if (g_fb_tseq == g_draw_seq && g_fb_tfn && !g_defer_replaying) { g_pso_lmap = g_fb_tlmap; g_pso_fsfn = g_fb_tfn; g_pso_fz = g_fb_tdesc; g_pso_dirty = 1; }   // same-pass feedback read from the tile (fb_tile_plan)
-    if (g_mtk.on) { cur_ps = mtk_pso(pr); cur_pull = 0; cur_pr = nil; if (!cur_ps) { g_mtk.miss = 1; return; } }   // a task / mesh draw (mesh_tasks_draw)
+    if (g_mtk.on) {   // a task / mesh draw (mesh_tasks_draw). In a slice-merged pass its amplified pipeline (mtk_amp_get); until that is built the pass ends and the draw opens one of its own
+        cur_ps = mtk_pso(pr, g_sm_pass);
+        if (!cur_ps && g_sm_pass) {
+            g_sm_nwait++; PD("M %llu slice-merged pass: no amplified pipeline yet for task %s mesh %s fragment %s; split here", g_stat_pass, g_mtk.ts ? g_mtk.ts->key : "-", g_mtk.ms ? g_mtk.ms->key : "-", pr->sh[1] ? pr->sh[1]->key : "-");
+            rp_end(); en = rp_begin_ex(mode); if (!en) return;
+            cur_ps = mtk_pso(pr, 0); }
+        cur_pull = 0; cur_pr = nil; if (!cur_ps) { g_mtk.miss = 1; return; } }
     else if (g_geo_mesh.on) { cur_ps = geo_mesh_pso(pr); cur_pull = 1; cur_pr = nil; if (!cur_ps) { g_geo_mesh.miss = 1; return; } }   // a mesh draw (geo_mesh_draw): pulls its streams; the next draw fetches its own pipeline; none yet: the compute path draws
     else if (g_pso_dirty || pr != cur_pr || cur_ps_pass != g_pass.serial || border != cur_border) { g_pso_amp = g_sm_pass; cur_ps = pso_get(pr, nil); g_pso_amp = 0; cur_pull = g_pso_pull; cur_pr = pr; cur_ps_pass = g_pass.serial; cur_border = border; g_pso_dirty = !cur_ps || cur_pull; }
     if (!cur_ps && g_sm_pass) {   // a draw whose amplified pipeline is not built yet (sm_amp_get queued it): the slice-merged pass ends and the draw opens a pass of its own

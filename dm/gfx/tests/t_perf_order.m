@@ -120,7 +120,7 @@ static void slices(id<MTLLibrary> lib) {
     mtl_reg_tex(501,&t,NULL); S.tex[1][0]=501;
     p->sh[1]->rf.nb=1; p->sh[1]->rf.b[0]=(nvn_rbind){.kind=NVN_RB_TEX,.reg=0};
     chain next={0}; rt(&next,&t,1,NULL); triangle(&next); emit(&next,OP_END,NULL,0); g_exec_next=next.p;
-    sm_plan(p); CHECK("first draw sampling attachment cannot start slice merge",!g_sm_plan.on);
+    sm_plan(p, 0); CHECK("first draw sampling attachment cannot start slice merge",!g_sm_plan.on);
     int kinds[]={NVN_RB_TEXU,NVN_RB_TEXD,NVN_RB_TEXA};
     for(unsigned i=0;i<sizeof kinds/sizeof *kinds;i++) {
         p->sh[1]->rf.b[0].kind=kinds[i];
@@ -131,6 +131,101 @@ static void slices(id<MTLLibrary> lib) {
     p->sh[1]->rf.bindless=0; p->sh[1]->rf.dyn=1;
     CHECK("dynamic reflection splits merged pass",draw_samples_rt(p));
     g_exec_next=NULL; g_sm_plan.on=0;
+}
+// Slice-merged passes whose draws are not all plain vertex draws with nothing bound between them: the compact uniform and vertex buffer bindings a game records before nearly
+// every draw (OP_BIND_UBO_SMALL, OP_BIND_VBUF1) do not end the plan, and a task / mesh draw goes to its layer through the view mapping as a vertex draw does, with a native mesh
+// pipeline built for it (mtk_amp_get). Every layer gets a colour of its own, so a draw that lands in another layer shows
+static void amp_wait(void) {   // the amplified pipelines asked for so far are built
+    for (int i = 0; i < g_sm_amp_n; i++) for (int k = 0; k < 5000; k++) { os_unfair_lock_lock(&g_sm_amp_lock); int done = g_sm_amp[i].done; os_unfair_lock_unlock(&g_sm_amp_lock); if (done) break; usleep(1000); }
+    for (int i = 0; i < g_sm_mamp_n; i++) for (int k = 0; k < 5000; k++) { os_unfair_lock_lock(&g_sm_mamp_lock); int done = g_sm_mamp[i].done; os_unfair_lock_unlock(&g_sm_mamp_lock); if (done) break; usleep(1000); }
+}
+static void mesh_tasks(chain *c, int first) {
+    p_draw d = {.prim = DM_PRIM_MESH_TASKS, .first = first, .count = 1, .instances = 1}; emit(c, OP_DRAW, &d, sizeof d);
+}
+static int layers_hold(const tex_t *t, int n, const int *red) {   // every pixel of layer l has red[l] in its first channel
+    id<MTLBuffer> out = [g_dev newBufferWithLength:(NSUInteger)n * 256 options:MTLResourceStorageModeShared];
+    id<MTLCommandBuffer> cb = [g_q commandBuffer]; id<MTLBlitCommandEncoder> e = [cb blitCommandEncoder];
+    for (int sl = 0; sl < n; sl++) [e copyFromTexture:tex_mtl(t) sourceSlice:(NSUInteger)sl sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0) sourceSize:MTLSizeMake(8,8,1) toBuffer:out destinationOffset:(NSUInteger)sl * 256 destinationBytesPerRow:32 destinationBytesPerImage:256];
+    [e endEncoding]; [cb commit]; [cb waitUntilCompleted];
+    int bad = 0; const uint8_t *b = out.contents;
+    for (int sl = 0; sl < n; sl++) for (int i = 0; i < 64; i++) bad += b[sl * 256 + 4 * i] != red[sl];
+    if (bad) { printf("  layers hold"); for (int sl = 0; sl < n; sl++) printf(" %d", b[sl * 256]); printf(", expected"); for (int sl = 0; sl < n; sl++) printf(" %d", red[sl]); printf("\n"); }
+    return !bad;
+}
+static void slice_kinds(id<MTLLibrary> lib) {
+    NSError *error = nil;
+    id<MTLLibrary> ml = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\n"
+        "struct V { float4 position [[position]]; float id; }; struct Block { uint first; };\n"
+        "using Mesh = metal::mesh<V, void, 3, 1, metal::topology::triangle>;\n"
+        // as dmsh_meshstage.py emits them: the object function reads the draw's {count, first} at buffer 29 and hands its block's first workgroup to the mesh function
+        "[[object]] void block(object_data Block& b [[payload]], mesh_grid_properties grid, uint otg [[threadgroup_position_in_grid]], constant uint* draw [[buffer(29)]]) {\n"
+        "  uint base = otg * 1024u; b.first = draw[1] + base; grid.set_threadgroups_per_grid(uint3(min(draw[0] - base, 1024u), 1u, 1u)); }\n"
+        "[[mesh]] void numbered(Mesh m, const object_data Block& b [[payload]], uint tg [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]]) {\n"
+        "  if (tid) return; float id = float(b.first + tg);\n"
+        "  m.set_vertex(0, V{float4(-1,-1,0,1), id}); m.set_vertex(1, V{float4(3,-1,0,1), id}); m.set_vertex(2, V{float4(-1,3,0,1), id});\n"
+        "  m.set_index(0,0); m.set_index(1,1); m.set_index(2,2); m.set_primitive_count(1); }\n"
+        "fragment float4 number(V in [[stage_in]]) { return float4(in.id / 255.0f, 0, 0, 1); }\n" options:nil error:&error];
+    if (!ml) printf("%s\n", error.localizedDescription.UTF8String);
+    CHECK("the mesh test's shaders compile", ml != nil); if (!ml) return;
+    static uint64_t serial = 950000; prog_t mpg = {0}; mpg.serial = ++serial;
+    NvProg *mp = [NvProg new]; mp->sh[4] = [NvShader new]; mp->sh[1] = [NvShader new];
+    mp->sh[4]->fn = [ml newFunctionWithName:@"numbered"]; mp->sh[4]->stage = 4; mp->sh[4]->mesh_kind = 2; mp->sh[4]->mesh_notask = 1; mp->sh[4]->mesh_threads = 32;
+    mp->sh[4]->mesh_obj = [ml newFunctionWithName:@"block"]; snprintf(mp->sh[4]->key, sizeof mp->sh[4]->key, "slice_numbered");
+    mp->sh[1]->fn = [ml newFunctionWithName:@"number"]; mp->sh[1]->stage = 1; mp->sh[1]->rf.color_known = 1; mp->sh[1]->rf.color_mask = 1; snprintf(mp->sh[1]->key, sizeof mp->sh[1]->key, "slice_number");
+    serial_put(mpg.serial, mp);
+    prog_t vpg = {0}; make_program(lib, &vpg, "red");
+    const int red6[6] = {255, 255, 255, 255, 255, 255}, num6[6] = {10, 20, 30, 40, 50, 60};
+
+    // 1. vertex draws with a uniform block and a vertex buffer bound before each: one pass
+    { tex_t t = texture(NVN_TEXTURE_TARGET_2D_ARRAY, NVN_FORMAT_RGBA8, 6); chain c = {0}; bind(&c, &vpg, 3);
+      for (int sl = 0; sl < 6; sl++) { rt(&c, &t, sl, NULL);
+          p_bind_ubo_small u = {.stage = 1, .index = 0, .size = 64, .addr = 0x10000}; emit(&c, OP_BIND_UBO_SMALL, &u, sizeof u);
+          p_bind_vbuf1 v = {.index = 0, .size = 0, .addr = 0}; emit(&c, OP_BIND_VBUF1, &v, sizeof v); triangle(&c); }
+      execute(&c); amp_wait(); c.n -= 8; uint64_t before = g_sm_ncont; execute(&c);
+      CHECK("six slices with buffers bound before each draw take five continuations", !sm_on() || g_sm_ncont - before == 5);
+      CHECK("every pixel of all six layers is red", layers_hold(&t, 6, red6)); }
+
+    // 2. task / mesh draws, one into each layer: first while their amplified pipeline is being built (passes of their own), then in one pass
+    { tex_t t = texture(NVN_TEXTURE_TARGET_2D_ARRAY, NVN_FORMAT_RGBA8, 6); chain c = {0}; bind(&c, &mpg, 0xc3);
+      for (int sl = 0; sl < 6; sl++) { rt(&c, &t, sl, NULL); mesh_tasks(&c, num6[sl]); }
+      execute(&c);
+      CHECK("mesh draws into six slices land in their own layers on their first use", layers_hold(&t, 6, num6));
+      amp_wait(); c.n -= 8; uint64_t before = g_sm_ncont, passes = g_sm_npass; execute(&c);
+      CHECK("mesh draws into six slices take five continuations", !sm_on() || g_sm_ncont - before == 5);
+      CHECK("in one slice-merged pass", !sm_on() || g_sm_npass - passes == 1);
+      CHECK("every layer holds its own mesh draw", layers_hold(&t, 6, num6)); }
+
+    // 3. vertex draws into every layer, then mesh draws into every layer again (Mario Kart World's sky cube map): one pass, the mesh draws on top
+    { tex_t t = texture(NVN_TEXTURE_TARGET_2D_ARRAY, NVN_FORMAT_RGBA8, 6); chain c = {0};
+      bind(&c, &vpg, 3); for (int sl = 0; sl < 6; sl++) { rt(&c, &t, sl, NULL); triangle(&c); }
+      bind(&c, &mpg, 0xc3); for (int sl = 0; sl < 6; sl++) { rt(&c, &t, sl, NULL); mesh_tasks(&c, num6[sl]); }
+      execute(&c); amp_wait(); c.n -= 8; uint64_t before = g_sm_ncont, passes = g_sm_npass; execute(&c);
+      CHECK("vertex then mesh draws into six slices take eleven continuations", !sm_on() || g_sm_ncont - before == 11);
+      CHECK("in one slice-merged pass", !sm_on() || g_sm_npass - passes == 1);
+      CHECK("every layer holds the mesh draw that came last", layers_hold(&t, 6, num6)); }
+
+    // 4. mesh draws first, vertex draws on top
+    { tex_t t = texture(NVN_TEXTURE_TARGET_2D_ARRAY, NVN_FORMAT_RGBA8, 6); chain c = {0};
+      bind(&c, &mpg, 0xc3); for (int sl = 0; sl < 6; sl++) { rt(&c, &t, sl, NULL); mesh_tasks(&c, num6[sl]); }
+      bind(&c, &vpg, 3); for (int sl = 0; sl < 6; sl++) { rt(&c, &t, sl, NULL); triangle(&c); }
+      execute(&c); amp_wait(); c.n -= 8; uint64_t before = g_sm_ncont, passes = g_sm_npass; execute(&c);
+      CHECK("mesh then vertex draws into six slices take eleven continuations", !sm_on() || g_sm_ncont - before == 11);
+      CHECK("in one slice-merged pass", !sm_on() || g_sm_npass - passes == 1);
+      CHECK("every layer holds the vertex draw that came last", layers_hold(&t, 6, red6)); }
+
+    // 5. a mesh draw that gets no amplified pipeline (here: the table has no room, as while one is being built) leaves the slice-merged pass a vertex draw opened and draws in a pass
+    //    of its own, into its own layer. A program of its own, so that its pipeline is not among those built above
+    { prog_t npg = {0}; npg.serial = ++serial; NvProg *np = [NvProg new]; np->sh[4] = [NvShader new]; np->sh[1] = mp->sh[1];
+      np->sh[4]->fn = mp->sh[4]->fn; np->sh[4]->stage = 4; np->sh[4]->mesh_kind = 2; np->sh[4]->mesh_notask = 1; np->sh[4]->mesh_threads = 32; np->sh[4]->mesh_obj = mp->sh[4]->mesh_obj;
+      snprintf(np->sh[4]->key, sizeof np->sh[4]->key, "slice_numbered_2"); serial_put(npg.serial, np);
+      tex_t t = texture(NVN_TEXTURE_TARGET_2D_ARRAY, NVN_FORMAT_RGBA8, 6); chain c = {0};
+      bind(&c, &vpg, 3); for (int sl = 0; sl < 6; sl++) { rt(&c, &t, sl, NULL); triangle(&c); }
+      bind(&c, &npg, 0xc3); for (int sl = 0; sl < 6; sl++) { rt(&c, &t, sl, NULL); mesh_tasks(&c, num6[sl]); }
+      os_unfair_lock_lock(&g_sm_mamp_lock); int room = g_sm_mamp_n; g_sm_mamp_n = SM_MAMP_MAX; os_unfair_lock_unlock(&g_sm_mamp_lock);
+      uint64_t before = g_sm_ncont, waits = g_sm_nwait; execute(&c);
+      os_unfair_lock_lock(&g_sm_mamp_lock); g_sm_mamp_n = room; os_unfair_lock_unlock(&g_sm_mamp_lock);
+      CHECK("the vertex draws merge and the mesh draws without an amplified pipeline stay apart", !sm_on() || (g_sm_ncont - before == 6 && g_sm_nwait > waits));
+      CHECK("every layer holds its own mesh draw", layers_hold(&t, 6, num6)); }
 }
 static void hoists(id<MTLLibrary> lib) {
     prog_t pg={0}, cp={.serial=910000}; make_program(lib,&pg,"red");
@@ -310,6 +405,6 @@ int main(int argc, char **argv) { @autoreleasepool {
         "struct Args { device uint *p [[id(0)]]; };\n"
         "kernel void compute_one(constant Args &a [[buffer(0)]]) { *a.p=73; }\n" options:nil error:&error];
     if(!lib) { fprintf(stderr,"%s\n",error.localizedDescription.UTF8String); return 2; }
-    slices(lib); hoists(lib); posts();
+    slices(lib); slice_kinds(lib); hoists(lib); posts();
     printf("performance ordering: %d checks, %d failed\n",checks,failed); return failed!=0;
 } }
