@@ -936,7 +936,9 @@ void mtl_pool_del(const void *mem) {
 // Address → pool: the last hit first, then a binary search over indices sorted by start address, and a full linear scan only when that fails (pools overlapping).
 // The Legend of Zelda: Breath of the Wild keeps about 1760 memory pools alive and every buffer binding of every draw looks one up; the old full scan took about 4% of the submit thread's samples (mtl_gpu_addr 222 / 6 s). Adding / removing pools invalidates the index, which is put right when next used. Caller holds g_mu
 // The index keeps the order of its last sort: indices past the table's new end leave it, new ones join at its end, and an insertion sort moves the few entries that are out of
-// place (a removed pool's place in the table is taken by the table's last entry, so that one is). PIDX_NOTE
+// place (a removed pool's place in the table is taken by the table's last entry, so that one is). Sorting anew took 0.3 ms for the 5,200 to 6,500 pools Mario Kart World keeps,
+// against 10 us, and the game finalizes pools in runs, 8 to 53 in a row as it leaves a stretch of track behind: each removal was followed by the replay's next buffer binding,
+// and a third of the replay's stacks in such a frame were in qsort (DM_SUBPROF; reference/frame-rate.md, "A run of memory pool Finalizes held the replay up").
 // An index further out of order than PIDX_MOVES places an entry is sorted anew, as it was every time
 enum { PIDX_MOVES = 8 };
 static int *g_pidx; static int g_pidx_cap, g_pidx_n; static uint64_t g_pidx_sorts, g_pidx_anew;   // g_pidx_n: the index holds a permutation of 0 .. g_pidx_n - 1
@@ -6403,7 +6405,9 @@ typedef struct { tex_t t; int ok; view_t v; int has_v; void *view; uint64_t view
                  void *stand; uint64_t stand_rid, stand_sum, reg_frame; uint8_t stand_tt1, stand_no; } treg_t;   // stand: what its pool table entries hold while its texture is not made (pool_stand; retained), stand_tt1 its texture type + 1, stand_no: it can have none; reg_frame: the frame of the registration
 static treg_t *g_treg; static int g_ntreg;
 static nvn_hmap g_treg_serial = {.klen = 8};   // serial → first registered descriptor index + 1, under g_rmu
-// The IDs registered with a texture of one memory pool, a list as by serial: a pool's Finalize marks them gone. TREG_POOL_NOTE
+// The IDs registered with a texture of one memory pool, a list as by serial: a pool's Finalize marks them gone. It walked every registered ID for that, under g_rmu, which every
+// draw takes for its textures: 0.75 to 1.2 ms a pool with Mario Kart World's 131,329 IDs, to mark an ID or none, so while the game finalized 50 pools in a row the replay moved
+// one lock hand-over at a time, and that frame took 65 ms
 static nvn_hmap g_treg_pool = {.klen = 8};   // memory pool object → first registered descriptor index + 1, under g_rmu
 static uint64_t g_treg_pool_seen;              // IDs a pool's Finalize looked at
 // Texture ID views are valid for an epoch (view_ser), not for every serial table change: ser_sync takes the notes (ser_note) and sends only the IDs registered with a noted serial
