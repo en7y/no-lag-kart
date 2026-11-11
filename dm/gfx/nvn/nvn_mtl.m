@@ -14165,10 +14165,8 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
     g_rp_layered = pr->sh[0] && pr->sh[0]->layer_out;
     if (g_enc && g_pass.layered != g_rp_layered) rp_end();   // a layered pass only for layer-writing vertex shaders (see rp_begin_ex)
     if (g_enc && g_sm_pass && draw_samples_rt(g_mtk.on && S.prog ? prog_get(S.prog) : pr)) { PD("M %llu a draw in the slice-merged pass samples its attachment; split here", g_stat_pass); rp_end(); }   // a task / mesh draw: its task and mesh stages too
-    if (!g_enc && mode == 0 && !g_rp_layered && !defer_q_draw && g_exec_next && !tbdr_on() && (!g_geo_program || g_mtk.on) && sm_on()) sm_plan(pr, g_mtk.on);
-    if (g_enc && g_sm_pass && draw_samples_rt(pr)) { PD("M %llu a draw in the slice-merged pass samples its attachment; split here", g_stat_pass); rp_end(); }
     if (g_enc && !defer_q_draw && long_pass_split_due()) { PD("M %llu %llu draws in this pass with the GPU idle: split here, the part so far submitted", g_stat_pass, (unsigned long long)(g_stat_draw - g_lps_draw0)); rp_end(); g_lps_splits++; g_cut_force = 1; sub_cut(); g_cut_force = 0; }
-    if (!g_enc && mode == 0 && !g_rp_layered && !defer_q_draw && g_exec_next && !tbdr_on() && !g_geo_program && sm_on()) sm_plan(pr);
+    if (!g_enc && mode == 0 && !g_rp_layered && !defer_q_draw && g_exec_next && !tbdr_on() && (!g_geo_program || g_mtk.on) && sm_on()) sm_plan(pr, g_mtk.on);
     vbuf_prepare(pr->sh[0] ? &pr->sh[0]->rf : NULL, dw, di);   // an unaligned GPU-written stream, or one the draw reads past, needs its ordered copy before the render encoder
     id<MTLRenderCommandEncoder> en = rp_begin_ex(mode);
     g_rp_layered = 0; g_sm_plan.on = 0;
