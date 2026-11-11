@@ -1,0 +1,21 @@
+# The upstream pull requests merged into this project's branches, in merge order: set <TAB> pull request <TAB> author <TAB> what it does. mkw/assemble.py merges a set.
+# fixes: corrections of wrong behaviour, each with a test that fails without it or a measurement, on code this game runs (mkw/TRIAGE.md has the reasons).
+# fast: speed-ups and stutter remedies whose mechanism removes work or moves it out of the frame; none adds work to a frame by design. Measured as one bundle against fixes.
+fixes	1594	seedds	Mario Kart World maps no memory past its application pool (mem_map_limit on)
+fixes	2091	cocoman93	A one-off frame after a loading screen no longer steps the frame step up
+fixes	2249	Pedro Nascimento	An argument block is reused only when its shader was the stage's latest encode
+fixes	2228	seedds	Uniform handle tables are refreshed after inline updates and new submissions
+fixes	2226	humanperzeus	An indirect dispatch no longer joins a copy encoder that holds work
+fixes	2182	seedds	Shared texture packages are held while any alias has a pending storage write
+fixes	2225	seedds	Dirty tracking is initialized once before memory pools are published
+fixes	2194	seedds	Presentation timing records are published as coherent snapshots
+fixes	2273	FifteenPen	A colour clear under a channel mask leaves the channels the mask holds back
+fast	1179	Adrian Smith	Indirect-count multi-draws are copied when their pass opens: the scene passes are no longer split
+fast	1437	seedds	DM_NVN_GPU_TS_PAD stretches the GPU times the game reads (off unless set)
+fast	1847	seedds	The maintainer's heavy-frame branch: argument tables patched, long passes cut while the GPU idles, a GPU clock keeper
+fast	1970	Adya	Draw passes overlap the previous one's fragments while image heaps are alive
+fast	2260	seedds	Texture views are also cached by the Metal texture they are made of
+fast	2251	FifteenPen	The prewarm builds every compute shader of the shader map
+fast	2018	Oliver Ames	A pipeline a hybrid draw stands in for is listed in pso_user.tsv when first asked for
+fast	2221	uncraftablexd	A run that ends during its prewarm keeps the pipelines it compiled
+fast	2240	SailorSnoW	Each nn::codec video decoder decodes on a thread of its own

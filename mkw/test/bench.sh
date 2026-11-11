@@ -15,7 +15,8 @@ ENVF="${BENCH_ENV-$ROOT/mkw/env-m2pro-16gb.txt}"
 [ -x "$BUILD/tools/dmhost" ] || { echo "no packed game in $BUILD: run mkw/test/pack.sh first"; exit 1; }
 [ -d "$BUILD/run/save" ] || { echo "no save in $BUILD/run/save: start the game once by hand, reach the main menu, quit"; exit 1; }
 pmset -g batt | grep -q "AC Power" || echo "warning: on battery, the numbers will be lower and less steady"
-set -- "$BUILD" --lock /tmp/mkw-measure.lock "$@"
+# As scripts/regress.py does: the game stays in focus and its window stays on top, so using another app during a run neither pauses nor slows it
+set -- "$BUILD" --lock /tmp/mkw-measure.lock --env DM_FOCUS_KEEP=1 --env DM_WINDOW_TOP=1 "$@"
 if [ -n "$ENVF" ] && [ -f "$ENVF" ]; then
   while IFS= read -r l; do case "$l" in ''|\#*) ;; *) set -- "$@" --env "$l";; esac; done < "$ENVF"
 fi

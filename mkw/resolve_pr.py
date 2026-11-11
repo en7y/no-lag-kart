@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
-# Resolves the merge conflicts of nxnative pull requests on this branch (run in the repo root, mid-merge): resolve_pr.py 1179 | 1437
+# Resolves the merge conflicts of nxnative pull requests on this branch (run in the repo root, mid-merge): resolve_pr.py 1179 | 1437 | 2221
 import re, pathlib, subprocess, sys
 pr = sys.argv[1]
+if pr == '2221':   # one line of a test, written two ways by two pull requests: this tree's stays
+    T = pathlib.Path('dm/gfx/tests/t_pso_archive.m'); t = T.read_text()
+    hs = list(re.finditer(r'<<<<<<< HEAD\n(.*?)=======\n(.*?)>>>>>>> [^\n]*\n', t, re.S))
+    assert len(hs) == 1 and 'arch_compact_stamp()' in hs[0].group(1) and 'arch_compact_stamp()' in hs[0].group(2), len(hs)
+    T.write_text(t[:hs[0].start()] + hs[0].group(1) + t[hs[0].end():]); print('resolved', pr); sys.exit(0)
 M = pathlib.Path('dm/gfx/nvn/nvn_mtl.m'); s = M.read_text()
 hunks = list(re.finditer(r'<<<<<<< HEAD\n(.*?)=======\n(.*?)>>>>>>> [^\n]*\n', s, re.S))
 if pr == '1179':
