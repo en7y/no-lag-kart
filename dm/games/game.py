@@ -210,6 +210,9 @@ def header_one(g):
     if dbr not in ('full', 'game'): sys.exit(f'{g.id}: draw_barriers must be full or game: {dbr}')
     pwh = g.get('pso_whole', 'off')   # render pipelines compiled whole, with their colour state, instead of specialized from a base with open colour state (nvn_mtl.m pso_whole_all)
     if pwh not in ('off', 'on'): sys.exit(f'{g.id}: pso_whole must be off or on: {pwh}')
+    fsp = g.words('fs_split', '')   # fragment shaders whose draws are made once for each colour attachment they write, on targets up to that many pixels (nvn_mtl.m fs_split_draw; needs pso_whole): <16-digit key>:<pixels> ...
+    if len(fsp) > 8 or any(not re.fullmatch(r'[0-9a-f]{16}:[1-9][0-9]{0,7}', w) for w in fsp): sys.exit(f'{g.id}: fs_split takes up to 8 entries <16-digit fragment shader key>:<largest target in pixels>: {" ".join(fsp)}')
+    if fsp and pwh != 'on': sys.exit(f'{g.id}: fs_split needs pso_whole on (only a pipeline compiled whole drops the masked outputs)')
     om = g.get('op_mode', 'console')   # the operation mode reported at start (hle_oe.c dm_opmode; DM_OPMODE overrides): console = docked, handheld = touch screen in use (Super Mario Galaxy's pointer)
     if om not in ('console', 'handheld'): sys.exit(f'{g.id}: op_mode must be console or handheld: {om}')
     if pl == 'touch' and om != 'handheld': sys.exit(f'{g.id}: pad_layout touch needs op_mode handheld (the touch screen reaches the game only in handheld mode)')
@@ -266,6 +269,7 @@ def header_one(g):
          f'#define DM_GAME_TEX_DYN_SLOTS {int(tds == "on")}',
          f'#define DM_GAME_DRAW_BARRIERS_GAME {int(dbr == "game")}',
          f'#define DM_GAME_PSO_WHOLE {int(pwh == "on")}',
+         f'#define DM_GAME_FS_SPLIT {q(",".join(fsp))}',
          f'#define DM_GAME_UPSCALER_KEYS {q(",".join(ups))}', f'#define DM_GAME_UPSCALER_N {len(ups)}',
          f'#define DM_GAME_VCONV_RANGE {int(vcr == "on")}',
          *([f'#define DM_GAME_NVN_API_MAJOR {api.split(".")[0]}', f'#define DM_GAME_NVN_API_MINOR {api.split(".")[1]}'] if g.get('device_api', '') else []),   # without the key: by the SDK version (hle_nvn.c nvn_api)

@@ -2463,6 +2463,16 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
             struct rusage ru; getrusage(RUSAGE_SELF, &ru);
             uint64_t pc = (uint64_t)(ru.ru_utime.tv_sec + ru.ru_stime.tv_sec) * 1000000000ull + (uint64_t)(ru.ru_utime.tv_usec + ru.ru_stime.tv_usec) * 1000ull;
             if (pproc) trow(f, "@proc_cpu_ms", (pc - pproc) / 1e6); pproc = pc;
+            {   // Memory pressure as this process met it: faults that read a page in (from a file or from swap), the other faults, pages taken back out of the compressor and
+                // memory read back from swap. A frame that waits for those shows no CPU time of its own. The compressed size is what macOS holds of the process in its compressor now
+                static uint64_t pmaj, pmin; static int64_t pswap; static uint32_t pdec; static int have;
+                task_vm_info_data_t vi; mach_msg_type_number_t vn = TASK_VM_INFO_COUNT;
+                int ok = task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &vn) == KERN_SUCCESS && vn >= TASK_VM_INFO_REV6_COUNT;
+                if (have) { trow(f, "@majflt", (double)((uint64_t)ru.ru_majflt - pmaj)); trow(f, "@minflt", (double)((uint64_t)ru.ru_minflt - pmin));
+                    if (ok) { trow(f, "@decomp", (double)(uint32_t)((uint32_t)vi.decompressions - pdec)); trow(f, "@swapin_kb", (double)(vi.ledger_swapins - pswap) / 1024.0); } }
+                if (ok) { trow(f, "@compressed_mb", (double)vi.compressed / 1048576.0); pdec = (uint32_t)vi.decompressions; pswap = vi.ledger_swapins; }
+                pmaj = (uint64_t)ru.ru_majflt; pmin = (uint64_t)ru.ru_minflt; have = 1;
+            }
             trow(f, "@call_ms", (t0 - g_t0_ns) / 1e6);
         }
         trow(f, "@passes", (double)(ps - prev_pass)); trow(f, "@draws", (double)(dr - prev_draw));

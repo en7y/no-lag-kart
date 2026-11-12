@@ -2184,10 +2184,12 @@ static uint64_t seg_idle_before(seg_clk *sc, uint64_t ns, uint64_t c0) {
     }
     return idle;
 }
-// DM_NVN_GPU_TS_PAD=<factor> (1.0 to 2.0, default 1): GPU headroom for a game's dynamic resolution. A submission's report times are stretched by the factor from its first segment's
-// start, so the game measures its GPU work that much longer and lowers its resolution until the padded time fits its budget: the real GPU time then stays under the frame by about
+// DM_NVN_GPU_TS_PAD=<factor> (1.0 to 2.0, default 1): GPU headroom for a game's dynamic resolution. A frame's report times are stretched by the factor from the GPU start of its
+// first submission, so the game measures its GPU work that much longer and lowers its resolution until the padded time fits its budget: the real GPU time then stays under the frame by about
 // 1 - 1/factor (1.10: about 9 %), room for the host's own GPU work and for spikes. Splatoon Raiders, once the gap-free timestamps let it see the real GPU time, filled the frame
 // (GPU median 18.7 ms against 16.7) and dropped frames. A tuning switch, off by default
+// From the frame's start, not from each submission's own: PAD_FRAME_NOTE
+static uint64_t g_pad_frame = UINT64_MAX, g_pad_base;   // the frame of the submission whose reports are being written, and the GPU start of that frame's first submission (0: not known); post_run sets them, under g_post_mu
 static double ts_pad(void) {
     static double v = -1;
     if (v < 0) { const char *e = getenv("DM_NVN_GPU_TS_PAD"); double f = e && *e ? atof(e) : 1.0; v = f >= 1.0 && f <= 2.0 ? f : 1.0;
@@ -2210,8 +2212,8 @@ static uint64_t rep_ticks(const post_op *o, seg_clk *sc, uint32_t last, uint64_t
     if (!ns) ns = top ? c0 : c1;
     if (ns && sc && ts_mode() == 1) { uint64_t idle = seg_idle_before(sc, ns, c0); if (idle < ns) ns -= idle; }
     double pad = ts_pad();
-    if (ns && pad != 1.0) {   // stretched from the submission's start: its first segment's GPU start (gaps come only after it), or the last segment's when it has one
-        uint64_t base = sc && last ? atomic_load(&sc->t[0][0]) : c0;
+    if (ns && pad != 1.0) {   // stretched from the frame's start (g_pad_base); with none known, from this submission's: its first segment's GPU start (gaps come only after it), or the last segment's when it has one
+        uint64_t base = g_pad_base ? g_pad_base : sc && last ? atomic_load(&sc->t[0][0]) : c0;
         if (base && ns > base) ns = base + (uint64_t)((double)(ns - base) * pad);
     }
     return ns ? nvn_timestamp_from_ns(ns) : gpu_ticks();
@@ -2371,7 +2373,15 @@ static void cbs_feedback(cbs_list *l, NSError *err, const char *where);
 static void lc_land(void);
 // A submission's CPU-side writes at its end (events, samples-passed and counter reports): run once, by its feedback handler or, when a game's SyncWait wakes on the
 // GPU's own signal of the fence first, by that waiter (DM_NVN_FAST_WAKE, on by default): the feedback handler comes 0.26 ms after the GPU end on an M2 Max
-typedef struct { _Atomic uint64_t fence; _Atomic int claimed; int n; post_op *ops; seg_clk *sc; uint32_t seg_last; uint64_t t_commit; } post_rec;   // t_commit: guest ns when it was committed
+typedef struct { _Atomic uint64_t fence; _Atomic int claimed; int n; post_op *ops; seg_clk *sc; uint32_t seg_last; uint64_t t_commit, frame; } post_rec;   // t_commit: guest ns when it was committed; frame: the frame it was committed in
+// DM_NVN_TS_LOG=<frame> (diagnostic): every counter timestamp report of three frames from that one, with the time the game reads from it: what a game that times its GPU work
+// (dynamic resolution) has to go by, report by report and submission by submission
+static int ts_log_on(uint64_t frame) { static long long v = -2; if (v == -2) { const char *e = getenv("DM_NVN_TS_LOG"); v = e && *e ? atoll(e) : -1; } return v >= 0 && frame >= (uint64_t)v && frame < (uint64_t)v + 3; }
+static void ts_log_report(const post_rec *r, const post_op *o, int i, uint64_t ticks) {
+    static uint64_t first; if (!first) first = ticks;
+    MLOG("[ts] frame %llu fence %llu op %d: type %#x in segment %u of %u reads %+.3f ms (%.3f ms after its submission's commit), report at %#llx", (unsigned long long)r->frame, (unsigned long long)atomic_load(&r->fence), i,
+         o->type, o->seg, r->seg_last, ((double)ticks - (double)first) / 614400.0, ((double)ticks / 0.6144 - (double)r->t_commit) / 1e6, (unsigned long long)o->addr);
+}
 #define POST_RING 128
 static post_rec g_postr[POST_RING];
 static pthread_mutex_t g_post_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -2387,6 +2397,10 @@ static void post_run(post_rec *r, uint64_t c0, uint64_t c1) {
     // MTLBuffer.contents may autorelease its receiver; keep that lifetime inside the completed copy.
     @autoreleasepool {
     int n = r->n; post_op *ops = r->ops; seg_clk *sc = r->sc; uint32_t seg_last = r->seg_last;
+    if (ts_pad() != 1.0 && r->frame != g_pad_frame) {   // the first submission of its frame to complete: its GPU start is the frame's (a submission with no time yet leaves the next one to give it)
+        uint64_t b = sc && seg_last ? atomic_load(&sc->t[0][0]) : 0; if (!b) b = c0;
+        g_pad_base = b; if (b) g_pad_frame = r->frame;
+    }
     for (int i = 0; i < n; i++) {
         if (ops[i].kind == 1) continue;   // A terminal release publishes after every earlier GPU write has landed.
         else if (ops[i].kind == 3) {   // Samples passed: the running total, in submission order
@@ -2395,7 +2409,8 @@ static void post_run(post_rec *r, uint64_t c0, uint64_t c1) {
             for (int k = 0; k < l->n; k++) { g_vis_acc += ((const uint64_t *)((__bridge id<MTLBuffer>)l->s[k].buf).contents)[l->s[k].slot]; CFRelease(l->s[k].buf); }
             free(l); if (ops[i].mode == VIS_REPORT) { uint64_t rec[2] = {g_vis_acc, gpu_ticks()}; memcpy((void *)ops[i].addr, rec, sizeof rec); }
         }
-        else { uint64_t t = rep_ticks(&ops[i], sc, seg_last, c0, c1), rec[2] = {(ops[i].type == 0 || ops[i].type == 0x10) && !DM_GAME_RENDER_COND ? t : 0, t}; memcpy((void *)ops[i].addr, rec, sizeof rec); }   // render_cond: a timestamp report's counter field is 0, as on the GPU (see rc_value)
+        else { uint64_t t = rep_ticks(&ops[i], sc, seg_last, c0, c1), rec[2] = {(ops[i].type == 0 || ops[i].type == 0x10) && !DM_GAME_RENDER_COND ? t : 0, t}; memcpy((void *)ops[i].addr, rec, sizeof rec);
+            if (ts_log_on(r->frame)) ts_log_report(r, &ops[i], i, t); }   // render_cond: a timestamp report's counter field is 0, as on the GPU (see rc_value)
     }
     // Forwarded counter values expire once their CPU-visible reports have landed.
     // This precedes event publication so a released CPU writer is never hidden by stale knowledge.
@@ -2459,7 +2474,7 @@ uint64_t mtl_sub_commit(void) {
     seg_clk *sc = g_sclk; uint32_t seg_last = g_seg; g_sclk = NULL;
     pthread_mutex_lock(&g_post_mu);
     if (!atomic_load(&pr->claimed) && pr->fence) MDIE("post ring: the writes of fence %llu never ran", (unsigned long long)pr->fence);
-    pr->n = n; pr->ops = ops; pr->sc = sc; pr->seg_last = seg_last; pr->t_commit = guest_ns(); atomic_store(&pr->claimed, 0); atomic_store(&pr->fence, fence);
+    pr->n = n; pr->ops = ops; pr->sc = sc; pr->seg_last = seg_last; pr->t_commit = guest_ns(); pr->frame = gpu_f; atomic_store(&pr->claimed, 0); atomic_store(&pr->fence, fence);
     pthread_mutex_unlock(&g_post_mu);
     int lost_test = gpu_lost_test();
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> cb) {
@@ -5861,6 +5876,7 @@ static void shmap_read(void) {
     NvShader *geo_lean_v[5]; uint8_t geo_lean_tried;   // a geometry shader's lean kernels by input topology (looked up once)
     NvShader *geo_bg_v[5], *geo_bgv_v; uint8_t geo_bg_tried;   // its kernels by input topology (_bg<n>) and its reader (_bgv), looked up once (bit 7: the reader)
     NSMutableDictionary *geo_mesh;   // a vertex shader's mesh entries by lean kernel key (geo_mesh_fn; NSNull: none)
+    uint32_t fs_split;   // a fragment shader: 0 not looked up, 1 not one whose draws are split, else 1 + the largest target in pixels they are split at (fs_split_px)
     uint8_t up_mfx;   // a compute shader that is the game's own upscaler (DM_GAME_UPSCALER_KEYS, from the shader map): 0 not decided, 1 drawn by MetalFX when DM_UPSCALER=metalfx, 2 not one or one its colour keeps (up_mfx_wanted)
     uint8_t up_color;   // such a shader's colour, from its code at load with DM_UPSCALER=metalfx (up_mfx_color; UP_COLOR_UNREAD otherwise)
     int gs_loc, lay_loc; char gs_comp, lay_comp;   // a slice-writing geometry shader (no function: the layer comes from input gs_loc.gs_comp) / a vertex shader with layer entry points writing output lay_loc.lay_comp (dmsh_build.py gs_slice, vs_layer_entry); -1 = none
@@ -14124,7 +14140,67 @@ static int long_pass_split_due(void) {
 }
 // A geometry-shader draw drawn as a mesh draw (geo_mesh_draw) is split before it, as draw_ splits the others: its inner draw_ runs with g_geo_program set, where no split is made
 static void long_pass_split_geo(void) { if (g_enc && long_pass_split_due()) { rp_end(); g_lps_splits++; g_cut_force = 1; sub_cut(); g_cut_force = 0; } }
-static void draw(const p_draw *dw, const p_draw_idx *di) { cp_stamp start = cp_begin(); if (dw && dw->prim == DM_PRIM_MESH_TASKS) mesh_tasks_draw(dw); else draw_(dw, di); cp_end(5, start); }
+// ---------- Split outputs (profile key fs_split, DM_NVN_FS_SPLIT=<key>:<pixels>[,...]; DM_NVN_FS_SPLIT=0 turns it off) ----------
+// A fragment shader that computes each of its colour outputs on its own runs all of them in one invocation, and on a target of a few pixels that one invocation is what the pass
+// costs: FS_SPLIT_NOTE
+// The profile lists such shaders, each with the largest target (in pixels) at which the split pays. A listed shader's draw is made once for each attachment it writes, with the
+// channel masks of the others at 0: with pipelines compiled whole (pso_whole_all) the compiler knows the masks and keeps only that attachment's part of the shader; in a
+// pipeline specialized from a base every draw would run the whole shader, so without whole pipelines the list is not used.
+// The draws are the same in everything else, so they give the picture of the one draw wherever nothing but the colour outputs can tell how often the shader ran. That holds when
+// no depth or stencil is attached (a draw that writes depth would change the test of the next), no samples are counted, nothing is captured, and the shader writes no image
+// or buffer; any other draw of a listed shader is made as it is. A deferred or merged pass replays records, where a mask set here would not hold: no split there either
+typedef struct { char key[17]; uint32_t px; } fs_split_ent;
+static fs_split_ent g_fs_split[8]; static int g_fs_split_n = -1;
+static uint64_t g_fs_split_draws;   // draws made in parts so far
+static int fs_split_n(void) {
+    if (g_fs_split_n < 0) {
+        const char *e = getenv("DM_NVN_FS_SPLIT"), *q = e ? e : DM_GAME_FS_SPLIT; int n = 0;
+        for (; q && *q && n < 8; q += strcspn(q, ","), q += *q == ',') {
+            char k[17]; unsigned px = 0;
+            if (sscanf(q, "%16[0-9a-f]:%u", k, &px) == 2 && strlen(k) == 16 && px) { memcpy(g_fs_split[n].key, k, sizeof k); g_fs_split[n++].px = px; }
+        }
+        if (n && !pso_whole_all()) { MLOG("split outputs: %d fragment shaders listed (profile key fs_split, DM_NVN_FS_SPLIT), not used: pipelines are not compiled whole (pso_whole)", n); n = 0; }
+        if (n) MLOG("split outputs: the draws of %d fragment shaders are made once for each colour attachment they write, on targets up to the listed sizes (profile key fs_split, DM_NVN_FS_SPLIT)", n);
+        g_fs_split_n = n;
+    }
+    return g_fs_split_n;
+}
+// The largest target, in pixels, at which fs's draws are split; 0: not listed, or it writes an image or a buffer (a store made once per attachment)
+static uint32_t fs_split_px(NvShader *fs) {
+    if (!fs->fs_split) {
+        fs->fs_split = 1;
+        for (int i = 0; i < g_fs_split_n; i++) {
+            if (strncmp(fs->key, g_fs_split[i].key, 16)) continue;
+            int stores = 0;
+            for (int b = 0; b < fs->rf.nb; b++) { const nvn_rbind *rb = &fs->rf.b[b];
+                if (rb->rw && (rb->kind == NVN_RB_IMG || rb->kind == NVN_RB_IMGU || rb->kind == NVN_RB_SBUFP || rb->kind == NVN_RB_SBUFU || rb->kind == NVN_RB_GMEM)) stores = 1; }
+            if (stores) MLOG("split outputs: fragment shader %s is listed but writes an image or a buffer: its draws are made whole", fs->key);
+            else fs->fs_split = 1 + g_fs_split[i].px;
+            break;
+        }
+    }
+    return fs->fs_split - 1;
+}
+// Makes the draw in parts if it is one to split and returns 1; 0: the caller makes it
+static int fs_split_draw(const p_draw *dw, const p_draw_idx *di) {
+    if (!fs_split_n() || R.rt.depth || !R.has_rt || !S.prog || g_geo_program || g_defer_replaying || g_defer.active || g_fz.active || S.tf_on || S.rast_discard || g_vis_on) return 0;
+    if (dw ? dw->mdi_cnt || dw->ind : di->mdi_cnt || di->ind) return 0;   // an indirect draw's record is read (and a multi-draw's count waited for) once
+    __unsafe_unretained NvProg *pr = prog_get(S.prog);
+    if (!pr || !pr->sh[1] || pr->sh[2] || pr->sh[3] || pr->sh[4]) return 0;
+    uint32_t px = fs_split_px(pr->sh[1]), m = S.chmask.mask; int n = 0, first = -1;
+    if (!px) return 0;
+    for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i] && (m >> (4 * i) & 0xf)) { n++; if (first < 0) first = i; }
+    if (n < 2) return 0;
+    uint32_t lv = R.rt.has_cview[first] && R.rt.cview[first].set_levels ? (uint32_t)R.rt.cview[first].base_level : 0;
+    uint32_t w = MAX(R.rt.color[first]->d.width >> lv, 1u), h = MAX(R.rt.color[first]->d.height >> lv, 1u);
+    if ((uint64_t)w * h > px) return 0;
+    if (!g_fs_split_draws++) MLOG("split outputs: first case pass %llu, fragment shader %s: %d draws, one for each attachment of %ux%u", g_stat_pass + !g_enc, pr->sh[1]->key, n, w, h);
+    PD("p %llu split outputs: %d draws, one for each attachment of %ux%u, fs=%s", g_stat_pass + !g_enc, n, w, h, pr->sh[1]->key);
+    for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i] && (m >> (4 * i) & 0xf)) { S.chmask.mask = m & (0xfu << (4 * i)); g_pso_dirty = 1; draw_(dw, di); }
+    S.chmask.mask = m; g_pso_dirty = 1;
+    return 1;
+}
+static void draw(const p_draw *dw, const p_draw_idx *di) { cp_stamp start = cp_begin(); if (dw && dw->prim == DM_PRIM_MESH_TASKS) mesh_tasks_draw(dw); else if (!fs_split_draw(dw, di)) draw_(dw, di); cp_end(5, start); }
 static void draw_(const p_draw *dw, const p_draw_idx *di) {
     g_draw_binst = (uint32_t)(dw ? dw->base_instance : di ? di->base_instance : 0);   // c0 + 0x644 of the stages that read the driver segment (encode_args)
     if (passdump()) { NvProg *p = g_geo_program ? g_geo_program : S.prog ? prog_get(S.prog) : nil;
