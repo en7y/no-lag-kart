@@ -44,8 +44,8 @@ Beyond the questions:
   holds the clock at its top for about 4.5 W in a race; with the keeper on `auto` and the pad, one player's picture is drawn with 20 to 25 % fewer pixels.
 - The encode thread (`enc_thread on`) takes 3 ms a frame off the replay thread with four players.
 - Left: one long frame at each scene cut (TRIAGE.md, "Open"); 2 to 10 late frames in the 20 s from a split-screen race's starting grid, nearly all at the
-  camera cut two seconds in; and with four players about one late frame in a hundred on the roads between a Grand Prix's courses (10,000 draws a frame:
-  the replay and the GPU both take 27 ms of the 33.3).
+  camera cut two seconds in; and with four players a late frame now and then on the roads between a Grand Prix's courses (10,000 draws a frame: 24 late
+  frames in a whole Grand Prix with the profiled host, 71 before it; the replay takes 23 to 26 ms of the 33.3 there and the GPU 26 to 27).
 - `DM_AUDIO=1 DM_AUDIO_MUTE=1` runs the real sound output with its samples zeroed: a sound-on run that nobody hears. It changed no frame count here.
 - Traps met here, beside section 10's: `make` does not rebuild a source that `cp` restored within the same second as the binary (touch it). A newly packed
   app's first start waits about three minutes while macOS scans the 24 GB bundle. A route's menu presses can slip by one screen (one run of the last night

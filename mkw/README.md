@@ -4,14 +4,15 @@ Goal: update 1.8.0 (v917504) at a steady 60 fps with full-quality textures, no s
 (30 fps is acceptable there if that is what the console does). Memory: up to about 10 GB is fine; nothing is scaled down to save memory.
 
 State (2026-11-12): the game runs as a Mac app, `<dump>/Mario Kart World.app`, packed from the branch `mkw-fin`. Measured on this Mac with the host the app
-carries (150cc, the first race of the Mushroom Cup, a window on the built-in screen, sound off, players 2 to 4 scripted, one run each):
+carries (150cc, the first race of the Mushroom Cup, a window on the built-in screen, sound off, players 2 to 4 scripted) and, where the count differs, the
+same run on the host before the profile build:
 
 | Players | Frame rate | Late frames while racing | The 20 s from the starting grid | GPU time a frame |
 |---|---|---|---|---|
-| 1 | 60 fps | none in a whole race (10,800 frames) | none | 10.9 ms of 16.7 |
-| 2 | 60 fps | none in 3,600 frames | 4 of 1,200 | 12.4 ms of 16.7 |
-| 3 | 30 fps, the game's own mode | 1 in 1,800 frames | 4 of 600 | 25.4 ms of 33.3 |
-| 4 | 30 fps, the game's own mode | 1 in a whole race (4,950 frames) | 2 of 600 | 25.2 ms of 33.3 |
+| 1 | 60 fps | 1 in a whole race (10,800 frames); none before | none | 10.8 ms of 16.7 |
+| 2 | 60 fps | none in 3,600 frames | 2 of 1,200; 4 before | 12.4 ms of 16.7 |
+| 3 | 30 fps, the game's own mode | none in 1,800 frames; 1 before | 1 of 600; 4 before | 25.6 ms of 33.3 |
+| 4 | 30 fps, the game's own mode | none in a whole race (4,950 frames); 1 before | 2 of 600; 2 to 10 in five runs before | 25.5 ms of 33.3 |
 
 One frame is long at each scene cut: the first frame of the starting grid takes 45 ms with one player and 117 to 170 ms in split screen (TRIAGE.md, "Open").
 The late frames of the fourth column fall two seconds after the grid appears, at the next camera cut and before the start signal.
@@ -20,15 +21,16 @@ A whole Grand Prix (one player, 150cc, the Mushroom Cup's four races, the award 
 only holds A): 60 fps throughout, 36 late frames in 64,620 (most at cuts between scenes, 13 while driving), no pipeline compiled on any of the four tracks,
 resident memory 10.2 GB in the first race and 11.2 GB at the end, nothing read back from swap.
 
-The same with four players (`gp150-4p-full`, the four races and the award): 30 fps, no pipeline compiled, nothing from swap, resident memory 11.6 GB at
-its highest; 71 late frames in 25,529, of which 62 on the roads between the courses in races two to four, where the four views draw 10,000 draws a frame
-(12 to 15 late frames in the worst minutes, 0 to 5 a minute on the courses). There the replay takes 27 ms of the frame's 33.3 at the median and the GPU 27.
+The same with four players (`gp150-4p-full`, the four races and the award): 30 fps, no pipeline compiled, nothing from swap, resident memory 11.8 GB at
+its highest; 24 late frames in 25,593, of which 17 on the roads between the courses in races two to four, where the four views draw 10,000 draws a frame
+(no minute with more than 6). There the replay takes 23 to 26 ms of the frame's 33.3 at the median and the GPU 26 to 27. Before the profile build the
+same run had 71 late frames, up to 15 in a minute. (The one-player run above was made before the profile build.)
 
 Sound: every run had it off or silenced. With the real output path running and its samples zeroed (`DM_AUDIO=1 DM_AUDIO_MUTE=1`): one player 60 fps with no
 late frame in 2,100, four players 0 and 5 late frames in a minute against 0 and 1 without it (two runs each), no underrun in any run.
 
-The host is built with the profile of its own runs (`mkw/pgo/README.md`): with four players the replay thread takes 7 to 11 % less time, and the heaviest
-minute of a Grand Prix had 1 late frame in place of 14.
+The host is built with the profile of its own runs (`mkw/pgo/README.md`): with four players the replay thread takes 7 to 11 % less time a draw, and a
+whole Grand Prix had 24 late frames in place of 71.
 
 Not tested: a TV, real controllers, sound as heard, the other cups and modes. The full account, with a chart of what each step did, is the build report (a document
 outside the repository, written for the owner of this Mac on 2026-11-12).

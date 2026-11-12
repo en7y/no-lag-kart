@@ -15,9 +15,13 @@ Measured, four players at 150cc, one run each of the same source built with and 
 |---|---|---|---|---|---|
 | The first race, seconds 120 to 180 | 8,000 | 23,327 → 21,257 | 20.82 → 19.32 ms | 22.55 → 21.24 ms | 0 → 0 |
 | Its start, seconds 100 to 120 | 11,000 | 21,790 → 19,517 | 24.53 → 21.75 ms | 26.31 → 23.56 ms | 7 → 3 |
-| The road to the second course, seconds 330 to 390 (`gp150-4p-r2`) | 10,300 | 22,314 → 19,826 | 25.67 → 23.14 ms | 27.54 → 25.13 ms | 14 → 1 |
+| The road to the second course, seconds 330 to 390 (`gp150-4p-r2`), three runs with the profile | 10,100 to 10,800 | 22,314 → 19,269 to 19,826 | 25.67 → 21.26 to 24.11 ms | 27.54 → 23.26 to 26.11 ms | 14 → 1, 16 and 1 |
+| The Mushroom Cup's four races, seconds 120 to 985 (`gp150-4p-full`) | 6,400 to 10,800 | | | | 71 → 24 |
 
-A frame has 33.3 ms in the game's 30 fps mode, and on that road the GPU takes 26 to 27 of them too: the 2.4 ms are what kept the frames on time.
+A frame has 33.3 ms in the game's 30 fps mode, and on that road the GPU takes 26 to 27 of them at the median too, so its late frames follow how heavy the four
+views happen to be: the profiled run with 16 had 10,800 draws a frame where the others had 10,100 to 10,400. The whole Grand Prix is what tells: 71 late
+frames in 25,529 without the profile (62 of them in frames of 9,000 draws or more), 24 in 25,593 with it (17), no minute with more than 6 where there
+were up to 15. (The commit that added the profile, `b629eec9`, says "14 late frames become 1" from the first run of each alone.)
 
 To record it again after the replay's hot paths change (a stale profile costs speed, never correctness: clang builds a function whose source changed
 without it):

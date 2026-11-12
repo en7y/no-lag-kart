@@ -27,6 +27,9 @@ Ten have a test in `dm/gfx/tests` or `dm/tools/tests` that fails without the fix
 Tools that are not fixes: `DM_CTL` lines `p2:` … `p8:` (scripted controllers, from PR #1781's idea, `d65a64ff`), `DM_SUBPROF` (the queue worker's stacks in a
 long frame), `DM_NVN_TS_LOG` (a frame's GPU timing reports), memory rows in `frames.tsv`, and `mkw/test`.
 
+A build step that is not a fix either: the host is compiled with a profile of its own runs (`b629eec9`, `mkw/pgo/README.md`). With four players the replay
+thread takes 7 to 11 % less time a draw, and a whole four-player Grand Prix had 24 late frames where it had 71.
+
 ## In: from other people (14 pull requests, 5 later upstream commits)
 
 | Change | From | Why it is in |
@@ -76,6 +79,6 @@ during the loading screen; that needs to know first how many registered textures
 | Upstream `224ecb18` and PR #2198, #2199 | each changes the shader chain: all 11,601 shaders built again, for no fault seen in this game |
 | PR #2413, task and mesh shaders as compute (`DM_NVN_MESH_COMPUTE=1`) | new on 2026-11-12, 528 lines, opt-in; its author measured 3.6 % of GPU time on another game's slow spot on an M1. This game has 25 task and mesh shaders (bushes and grass): worth one run |
 | PR #2374, #2344, #2329, #2330, #2412 | real fixes whose fault no run of this game showed |
-| A profile-guided build of the host, unretained locals in the replay's hot paths | the replay thread is no longer the limit: 21 to 26 ms of a 33.3 ms frame with four players |
+| Unretained locals in the replay's hot paths (12.6 % of the replay thread is Objective-C retain and release) | code changes in the hottest paths; to measure on `gp150-4p-r2` and a whole `gp150-4p-full` |
 
 The first triage of 2026-11-11 (before the game ran here) and the earlier combined branches are in this file's history and in `old/…`.
