@@ -65,7 +65,47 @@ static void check_idle_gaps(ClockDevice *device, ClockHeap *heap) {
     heap.slots = NULL; heap.nslots = 0;
 }
 
-int main(void) {
+// DM_NVN_GPU_TS_PAD=1.25 (./t_counter_clock --pad): a frame's report times are stretched from the GPU start of its first submission, whichever submission a report is in. A game
+// that reads its frame's GPU time from a report in its first submission and one in its last then measures it 1.25 times as long; stretched from each submission's own start,
+// as it was, only the last submission's part was
+static void check_pad(void) {
+    const uint64_t g0 = 5000000000ull;
+    post_op top = {.type = 0x10, .seg = 0}, end = {.type = 0, .seg = 0};
+    #define T(ns) nvn_timestamp_from_ns(ns)
+    pad_begin(7, NULL, 0, g0);   // frame 7's first submission: one command buffer, the GPU at work from g0 to g0 + 4,000
+    uint64_t a0 = rep_ticks(&top, NULL, 0, g0, g0 + 4000), a1 = rep_ticks(&end, NULL, 0, g0, g0 + 4000);
+    CHECK("the frame's first report keeps its time", a0 == T(g0));
+    CHECK("the first submission's end is stretched from the frame's start", a1 == T(g0 + 5000));
+    pad_begin(7, NULL, 0, g0 + 6000);   // its second submission, g0 + 6,000 to g0 + 10,000 (the 2,000 between them: the host translating)
+    uint64_t b0 = rep_ticks(&top, NULL, 0, g0 + 6000, g0 + 10000), b1 = rep_ticks(&end, NULL, 0, g0 + 6000, g0 + 10000);
+    CHECK("a later submission's start is stretched from the frame's start too", b0 == T(g0 + 7500));
+    CHECK("and its end", b1 == T(g0 + 12500));
+    CHECK("the frame's span, first report to last, reads 1.25 times its 10,000 ns", b1 - a0 == T(g0 + 12500) - T(g0));
+    pad_begin(8, NULL, 0, g0 + 20000);   // the next frame starts anew
+    CHECK("the next frame's first report keeps its time", rep_ticks(&top, NULL, 0, g0 + 20000, g0 + 23000) == T(g0 + 20000));
+    CHECK("and its end is stretched from that frame's start", rep_ticks(&end, NULL, 0, g0 + 20000, g0 + 23000) == T(g0 + 23750));
+    pad_begin(9, NULL, 0, 0);   // a first submission with no GPU time yet
+    CHECK("a submission with no time gives its frame no start", g_pad_base == 0 && g_pad_frame == 8);
+    pad_begin(9, NULL, 0, g0 + 40000);
+    CHECK("the frame's next submission gives it", g_pad_base == g0 + 40000 && g_pad_frame == 9 && rep_ticks(&end, NULL, 0, g0 + 40000, g0 + 42000) == T(g0 + 42500));
+    static seg_clk clock; memset(&clock, 0, sizeof clock); atomic_store(&clock.t[0][0], g0 + 50000); atomic_store(&clock.t[0][1], g0 + 51000);
+    pad_begin(10, &clock, 2, g0 + 53000);   // a submission cut into command buffers: gaps come only after its first segment
+    CHECK("a submission of several command buffers starts at its first segment's GPU start", g_pad_base == g0 + 50000 && g_pad_frame == 10);
+    pad_begin(10, NULL, 0, g0 + 50000 + PAD_FRAME_NS);   // a frame that goes on and on (a loading screen that presents nothing)
+    CHECK("a frame's start holds for a quarter of a second", g_pad_base == g0 + 50000);
+    pad_begin(10, NULL, 0, 0);
+    CHECK("and through a submission with no time", g_pad_base == g0 + 50000 && g_pad_frame == 10);
+    pad_begin(10, NULL, 0, g0 + 50001 + PAD_FRAME_NS);
+    CHECK("past that the stretch starts anew", g_pad_base == g0 + 50001 + PAD_FRAME_NS && g_pad_frame == 10);
+    #undef T
+}
+
+int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "--pad")) {
+        setenv("DM_NVN_GPU_TS_PAD", "1.25", 1); check_pad();
+        printf("counter clock, reports stretched 1.25 times: %u checks, %u failed\n", checks, failures);
+        return failures != 0;
+    }
     @autoreleasepool {
         ClockDevice *device = [ClockDevice new];
         ClockHeap *heap = [ClockHeap new];
@@ -88,6 +128,7 @@ int main(void) {
         CHECK("a missing CPU sample takes the existing feedback fallback", rep_ticks(&report, &clock, 0, 10000, 0) == nvn_timestamp_from_ns(10000));
         device.cpu = now_ns() - delay; device.gpu = device.cpu + offset;
         check_idle_gaps(device, heap);
+        pad_begin(7, NULL, 0, 1000); CHECK("with no stretch asked for a frame takes no start", g_pad_base == 0 && g_pad_frame == UINT64_MAX);
 
         guest_clock_freeze(1);
         uint64_t frozen = guest_ns();

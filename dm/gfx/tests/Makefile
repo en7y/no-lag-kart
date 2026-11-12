@@ -97,6 +97,10 @@ t_timestamp: t_timestamp.c ../nvn/nvn_timestamp.h
 	$(CC) -std=c11 -O2 -g -Wall -Wextra -Werror -o $@ $<
 t_counter_clock: t_counter_clock.m ../../host/hle_os.c ../../host/dm.h $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_counter_clock.m ../../host/hle_os.c $(MTL_T_SRC) $(FW)
+.PHONY: check_t_counter_clock
+check_t_counter_clock: t_counter_clock
+	./t_counter_clock
+	./t_counter_clock --pad
 t_fstep: t_fstep.c ../nvn/nvn_fstep.h
 	clang -O1 -Wall -o $@ t_fstep.c
 t_present_history: t_present_history.c ../nvn/nvn_present_history.h
@@ -185,6 +189,13 @@ t_addr_known: t_addr_known.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_addr_known.m $(MTL_T_SRC) $(FW)
 t_pool_finalize: t_pool_finalize.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pool_finalize.m $(MTL_T_SRC) $(FW)
+t_fs_split: t_fs_split.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_fs_split.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_fs_split
+check_t_fs_split: t_fs_split
+	MTL_DEBUG_LAYER=1 ./t_fs_split
+	DM_NVN_ENC_THREAD=1 MTL_DEBUG_LAYER=1 ./t_fs_split
+	MTL_DEBUG_LAYER=1 ./t_fs_split --bases
 t_pool_chunks: t_pool_chunks.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pool_chunks.m $(MTL_T_SRC) $(FW)
 t_pool_retire: t_pool_retire.m $(MTL_T_DEP)

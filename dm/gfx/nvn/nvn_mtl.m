@@ -2196,6 +2196,17 @@ static double ts_pad(void) {
         if (v != 1.0) MLOG("counter timestamps: GPU times reported %.2fx (DM_NVN_GPU_TS_PAD): headroom for the game's dynamic resolution", v); }
     return v;
 }
+// A submission's reports are about to be written (post_run, in submission order): the first submission of its frame gives the frame's start, the GPU start of its first segment
+// (gaps come only after it) or of its only command buffer. One with no time yet leaves the next to give it, and its own reports are stretched from nothing.
+// A frame that has gone on for longer than PAD_FRAME_NS is none to measure (a loading screen that submits and presents nothing): the stretch starts anew there, as the times
+// read would otherwise run ahead of the GPU's by the factor's excess of all that time, and fall back by as much at the next frame
+enum { PAD_FRAME_NS = 250000000 };
+static void pad_begin(uint64_t frame, seg_clk *sc, uint32_t last, uint64_t c0) {
+    if (ts_pad() == 1.0) return;
+    uint64_t b = sc && last ? atomic_load(&sc->t[0][0]) : 0; if (!b) b = c0;
+    if (frame == g_pad_frame && !(b && b > g_pad_base + PAD_FRAME_NS)) return;
+    g_pad_base = b; if (b) g_pad_frame = frame;
+}
 static uint64_t rep_ticks(const post_op *o, seg_clk *sc, uint32_t last, uint64_t c0, uint64_t c1) {   // the time a counter report records (614.4 MHz); c0 / c1: the last segment's GPU start / end on the guest clock
     int top = o->type == 0x10; uint64_t ns = 0;
     uint32_t bi = o->seg + !top;
@@ -2397,10 +2408,7 @@ static void post_run(post_rec *r, uint64_t c0, uint64_t c1) {
     // MTLBuffer.contents may autorelease its receiver; keep that lifetime inside the completed copy.
     @autoreleasepool {
     int n = r->n; post_op *ops = r->ops; seg_clk *sc = r->sc; uint32_t seg_last = r->seg_last;
-    if (ts_pad() != 1.0 && r->frame != g_pad_frame) {   // the first submission of its frame to complete: its GPU start is the frame's (a submission with no time yet leaves the next one to give it)
-        uint64_t b = sc && seg_last ? atomic_load(&sc->t[0][0]) : 0; if (!b) b = c0;
-        g_pad_base = b; if (b) g_pad_frame = r->frame;
-    }
+    pad_begin(r->frame, sc, seg_last, c0);
     for (int i = 0; i < n; i++) {
         if (ops[i].kind == 1) continue;   // A terminal release publishes after every earlier GPU write has landed.
         else if (ops[i].kind == 3) {   // Samples passed: the running total, in submission order
