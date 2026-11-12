@@ -27,7 +27,8 @@ its highest; 71 late frames in 25,529, of which 62 on the roads between the cour
 Sound: every run had it off or silenced. With the real output path running and its samples zeroed (`DM_AUDIO=1 DM_AUDIO_MUTE=1`): one player 60 fps with no
 late frame in 2,100, four players 0 and 5 late frames in a minute against 0 and 1 without it (two runs each), no underrun in any run.
 
-The app on this Mac was packed from `86d089e9`; the commits after it change notes and test tools only.
+The host is built with the profile of its own runs (`mkw/pgo/README.md`): with four players the replay thread takes 7 to 11 % less time, and the heaviest
+minute of a Grand Prix had 1 late frame in place of 14.
 
 Not tested: a TV, real controllers, sound as heard, the other cups and modes. The full account, with a chart of what each step did, is the build report (a document
 outside the repository, written for the owner of this Mac on 2026-11-12).
@@ -76,4 +77,4 @@ profile: `pso_whole on`, `fs_split` for the two reflection filters, `enc_thread 
 function's fingerprint in this build's `main`) · `bahs_probe.py` (what the shader split reads in a shader package) · `sets.tsv` and `assemble.py` (the merged pull
 request sets as data) ·
 `env-m2pro-16gb.txt` and `env-low-memory.txt` · `pads.swift` · `resolve_pr.py`, `resolve_pr1847.py`, `resolve_neo.py` (merge resolutions as code) ·
-`merge_pso_lists.py` and `pso/` · `checks/` (the first frame-step simulations; superseded by `dm/gfx/tests/t_fstep.c`).
+`merge_pso_lists.py` and `pso/` · `pgo/` (the profile the host is built with, and what it gave) · `checks/` (the first frame-step simulations; superseded by `dm/gfx/tests/t_fstep.c`).

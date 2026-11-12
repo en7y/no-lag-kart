@@ -18,6 +18,14 @@ include ../mac/min_os.mk
 # -O2 as the other native code here (libvpx, dav1d, the launcher; the iOS host builds at Xcode Release's -Os). Not -O3 (no measured gain over -O2) and not -flto, which moves
 # hle_bigstack.c's inline-assembly entry apart from its return path (SIGBUS in dm_bigstack_enter on Breath of the Wild, PR #556)
 CFLAGS=-O2 -g -Wall -Wno-unused-function -mmacosx-version-min=$(MACOS_MIN)
+# Mario Kart World on this branch: the host is built with the profile of its own runs when the file is there (mkw/pgo/README.md: how it was recorded and what it gave,
+# 7 to 11 % of the replay thread's time with four players). Other games are built as before: a profile says nothing of code its runs never reached, and clang lays such code
+# out as cold. A source that moved on since the profile was recorded is built without it for the functions that changed (the two -Wno flags keep that quiet)
+ifeq ($(GAME),0400C3F00006E000)
+ifneq ($(wildcard ../../mkw/pgo/dmhost.profdata),)
+CFLAGS+=-fprofile-instr-use=$(abspath ../../mkw/pgo/dmhost.profdata) -Wno-profile-instr-out-of-date -Wno-profile-instr-unprofiled
+endif
+endif
 # Service-layer takeover hle_*.c files are included by wildcard: adding a file does not touch this line (avoids merge conflicts)
 SRC=main.c loader.c hle.c crash.c probe.c thread.c save_sync.c memstat.m haptics_apple.m pad_switch2_apple.m $(sort $(wildcard hle_*.c)) front_mac.m web_apple.m entry.S
 # NVN null device + nn::vi + the Vulkan layer (dm/gfx/)
