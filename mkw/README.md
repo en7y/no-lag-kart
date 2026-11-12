@@ -20,9 +20,16 @@ A whole Grand Prix (one player, 150cc, the Mushroom Cup's four races, the award 
 only holds A): 60 fps throughout, 36 late frames in 64,620 (most at cuts between scenes, 13 while driving), no pipeline compiled on any of the four tracks,
 resident memory 10.2 GB in the first race and 11.2 GB at the end, nothing read back from swap.
 
+The same with four players (`gp150-4p-full`, the four races and the award): 30 fps, no pipeline compiled, nothing from swap, resident memory 11.6 GB at
+its highest; 71 late frames in 25,529, of which 62 on the roads between the courses in races two to four, where the four views draw 10,000 draws a frame
+(12 to 15 late frames in the worst minutes, 0 to 5 a minute on the courses). There the replay takes 27 ms of the frame's 33.3 at the median and the GPU 27.
+
+Sound: every run had it off or silenced. With the real output path running and its samples zeroed (`DM_AUDIO=1 DM_AUDIO_MUTE=1`): one player 60 fps with no
+late frame in 2,100, four players 0 and 5 late frames in a minute against 0 and 1 without it (two runs each), no underrun in any run.
+
 The app on this Mac was packed from `86d089e9`; the commits after it change notes and test tools only.
 
-Not tested: a TV, real controllers, sound on, other tracks and modes. The full account, with a chart of what each step did, is the build report (a document
+Not tested: a TV, real controllers, sound as heard, the other cups and modes. The full account, with a chart of what each step did, is the build report (a document
 outside the repository, written for the owner of this Mac on 2026-11-12).
 
 ## Read these
