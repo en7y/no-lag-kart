@@ -1,9 +1,50 @@
 # Mario Kart World natively on the Mac: what we know
 
-Everything here was read in a source, and each line says which. Nothing in it has been seen on this Mac yet: the game has not run here.
+Sections 1 to 11 were read in sources on 2026-11-11, before the game ran on this Mac, and each line says which source. Section 0 holds what this Mac
+measured on 2026-11-11 and 12; where a run contradicted a later line, the line is corrected and says so.
 Sources: **[code]** nxnative's source at upstream `352e4a6e` (2026-11-11); **[note]** upstream's game note `dm/games/0400C3F00006E000/README.md`;
 **[doc]** upstream's `docs/`; **[PR n]** / **[issue n]** of seedds/nxnative; **[sim]** run by us with the host's own code, no game; a repository name for other projects.
 When a first run contradicts a line, the run wins: correct the line and say what was measured.
+
+## 0. What this Mac measured (2026-11-11 and 12: 16 GB M2 Pro, macOS 26.7.1, update 1.8.0)
+
+The answers to section 11's questions, in its order, then what the work taught beyond them. The figures with their runs: [TRIAGE.md](TRIAGE.md), the game
+note's "Frame rate" (`dm/games/0400C3F00006E000/README.md`) and `docs/reference/frame-rate.md`.
+
+1. 1.8.0 boots to the title and races. At the end of a race the host holds 10.0 to 10.2 GB resident (GPU allocated 8.8 to 9.0 GB); macOS keeps 3.6 to 4.7 GB of
+   the Mac's memory compressed and reads nothing back from swap.
+2. The base game's routes do not fit 1.8.0. The routes in `bench.tsv` are 1.8.0's own: the title takes A from about 20 s, the first race's starting grid
+   appears at about 97 s with one player and 100 s in split screen, and a 150cc race driven by holding A lasts 3 min 15 s.
+3. The baseline (upstream with the merged warm-up list), 50cc race: 59.1 to 59.3 fps, 47 to 53 late frames a minute, GPU 14.2 ms a frame. With everything in
+   `mkw-fin`, 150cc: 60.0 fps, no late frame in a whole race, GPU 10.9 ms.
+4. Game time is 1.000 of real time, with `fps_step_max 2` and with the frame step found on 1.8.0 (its frame-interval function moved: a second fingerprint).
+   In the game's own 30 fps mode the frame-step log line reads 2.000 of real time: the line counts the game's step twice there. The race lasts the same
+   3 min 15 s as with one player.
+5. The game lowers its resolution by the GPU time it measures, and on the Mac that left it no margin for the host's own work: in split screen it kept its size
+   and dropped frames. `DM_NVN_GPU_TS_PAD=1.25` gives it the margin, once the pad counts from the frame's first submission: this game times a frame across 23
+   submissions with two players and 42 with four, and a pad that counts from each submission's own start changed nothing at any factor.
+6. The reflection (cube map) filters were the top GPU cost, a quarter of the GPU's time in split screen, for two reasons that both lie in how Metal compiles
+   one fragment shader: a pipeline specialized from a base with open colour state ran it several times slower (`pso_whole`), and one invocation computes all
+   six faces whatever the target's size (`fs_split`).
+7. With the placeholder list the app's first start had 116 long frames in 75 s at the title. With the merged list (15,062 rows) and a warm archive, no long
+   frame of a start or a race came from a pipeline; "Preparing shaders" takes about 9 s.
+8. Game Mode is off for the packed app (`LSSupportsGameMode` false in its Info.plist). Fullscreen, on the ProMotion screen or a TV: not measured (no TV was
+   connected; every run was a window on the built-in screen).
+9. The FSWZADD shaders: not looked at. The screenshots checked from one, two, three and four player races show no fault.
+10. With three and four players the game sets its own 30 fps mode (a fixed step of 2), with two it runs at 60. A single Joy-Con: not tried, no controller was
+    connected; players 2 to 4 were scripted (`mkw/test/routes/*.ctl`).
+
+Beyond the questions:
+
+- Split screen was bound by the GPU and by how the game times it, not by the CPU, until the pad worked. Only then was the replay thread the limit at a
+  race's start: 27 ms of translation a frame with four players, 24 after PR #2408 and the commit's shorter walk.
+- The GPU's clock follows its load. A game that needs 11 ms of a 16.7 ms frame is clocked down and misses frames when a heavy moment comes. `DM_GPU_KEEP=1`
+  holds the clock at its top for about 4.5 W in a race; with the keeper on `auto` and the pad, one player's picture is drawn with 20 to 25 % fewer pixels.
+- The encode thread (`enc_thread on`) takes 3 ms a frame off the replay thread with four players.
+- Left: one long frame at each scene cut (TRIAGE.md, "Open") and 2 to 4 late frames in the first 20 s of a split-screen race.
+- Traps met here, beside section 10's: `make` does not rebuild a source that `cp` restored within the same second as the binary (touch it). A newly packed
+  app's first start waits about three minutes while macOS scans the 24 GB bundle. A route's menu presses can slip by one screen (one run of the last night
+  went through a cup movie): look at a run's last screenshot before believing its numbers. `DM_AUDIO=0` in the launch environment silences a test start.
 
 ## 1. How the pieces fit
 
@@ -105,6 +146,7 @@ Image views of the type a shader declares) and lamp glows showing through buildi
 
 A frame has a CPU side (the game's own code, then the host translating its graphics calls: the "submit" thread, 4 to 6.5 ms a frame in a race on an M6 [note])
 and a GPU side. Whichever is longer sets the frame rate. On M1 and M2 class GPUs the GPU side is the limit for this game [note: M1 Pro].
+The table's last column is the state of 2026-11-11; what was taken and what each lever gave on this Mac is in TRIAGE.md and section 0.
 
 | Lever | What it does | Measured by | State here |
 |---|---|---|---|
@@ -143,8 +185,8 @@ milliseconds on the Mac, so the first minutes of a game hitch unless the pipelin
 6. **Task / mesh pipelines** have no stand-in: one not on a list is built before its draw. Mario Kart World has 25 such shaders, so its `M` rows matter. [doc] [note]
 
 Lists we hold: PR #2097's (9,342 rows: 5,689 S, 3,492 R, 150 C, 11 M; recorded over about 15 launches of the first Grand Prix race on 1.8.0 on an iPhone;
-there 115 frames of 50 ms or more in 7,800 became 23 in 28,700) and `mkw/pso/pso_manifest_merged_180.tsv` (14,965 rows from five sources,
-`mkw/merge_pso_lists.py`). Neither is installed: upstream's profile still ships the two-line placeholder. Finding what still waits:
+there 115 frames of 50 ms or more in 7,800 became 23 in 28,700) and `mkw/pso/pso_manifest_merged_180.tsv` (15,062 rows from 10 lists of 6 repositories,
+`mkw/pso/README.md`). The merged list is the profile's `pso_manifest.tsv` in `mkw-fin` and ships in the app; upstream's profile still ships the two-line placeholder. Finding what still waits:
 the `pipelines up to frame` line every 300 frames (draws that waited, by reason) and `DM_PSO_WAITLOG=1` (every wait over 20 ms with its shader pair). [doc]
 
 ## 5. Memory on a 16 GB Mac
@@ -236,6 +278,8 @@ mixed. A number from a separate invocation is not comparable.
 - GitHub's web pages rate-limit or block automated reading; `git fetch` of `pull/<n>/head` and the REST API (60 requests an hour unauthenticated) work.
 
 ## 11. Open questions, in the order the first runs answer them
+
+Answered in section 0, in the same order.
 
 1. Does 1.8.0 boot to the title on this Mac, and how much memory does it hold there? (first run by hand, with `watchdog.sh`)
 2. Does `gp-race1` reach the race inside its window? (screenshots of the first `bench.sh` run)

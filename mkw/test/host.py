@@ -54,8 +54,8 @@ def overlay(derived, own, keys):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('label'); ap.add_argument('--base', default='mkw-fixes'); ap.add_argument('--key', action='append', default=[])
-    ap.add_argument('--list'); ap.add_argument('merge', nargs='*')
+    ap.add_argument('label'); ap.add_argument('--base', default='mkw-fin'); ap.add_argument('--key', action='append', default=[])
+    ap.add_argument('--list'); ap.add_argument('--cflags', default='', help='compiler flags added to dm/host/Makefile\'s CFLAGS for this variant (-O3, -fprofile-instr-generate ...)'); ap.add_argument('merge', nargs='*')
     a = ap.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9._-]+', a.label): sys.exit('the label: letters, digits, . _ -')
     wt, var = WTS / a.label, BUILD / 'variants' / a.label
@@ -92,13 +92,18 @@ def main():
         if a.key or a.list: sys.exit('--key and --list need the packed game\'s profile')
     host = wt / 'dm/host'
     log = var / 'build.log'; var.mkdir(parents=True, exist_ok=True)
-    with open(log, 'w') as fh: r = subprocess.run(['make', '-C', str(host), f'GAME={ID}', 'dmhost'], env=env, stdout=fh, stderr=subprocess.STDOUT)
+    cmd = ['make', '-C', str(host), f'GAME={ID}', 'dmhost']
+    if a.cflags:   # the Makefile's own flags with the variant's after them (a command-line CFLAGS replaces the Makefile's)
+        m = re.search(r'^CFLAGS=(.*)$', (host / 'Makefile').read_text(), re.M)
+        if not m: sys.exit('no CFLAGS line in dm/host/Makefile')
+        cmd.append(f'CFLAGS={m[1]} {a.cflags}')
+    with open(log, 'w') as fh: r = subprocess.run(cmd, env=env, stdout=fh, stderr=subprocess.STDOUT)
     if r.returncode: sys.exit(f'the host does not build: {log}')
     shutil.copy2(host / 'dmhost', var / 'dmhost')
     head = git('rev-parse', '--short', 'HEAD', cwd=wt).stdout.strip()
     hdr = (host / 'gen' / ID / 'game_profile.h').read_text()
     keys = ' '.join(f'{m[1].lower()}={m[2]}' for m in re.finditer(r'#define DM_GAME_(MEM_MAP_LIMIT|FPS_TARGET|FPS_HOLD|FPS_STEP_MAX|ENC_THREAD|PRESENT_SNAP) (\S+)', hdr))
-    (var / 'about.txt').write_text(f'{a.label}: {a.base} {head}' + ''.join(f' + {m}' for m in a.merge) + f'\nprofile: {prof}\n{keys}\nwarnings: {log.read_text(errors="replace").count("warning:")}\n')
+    (var / 'about.txt').write_text(f'{a.label}: {a.base} {head}' + ''.join(f' + {m}' for m in a.merge) + (f' cflags {a.cflags}' if a.cflags else '') + f'\nprofile: {prof}\n{keys}\nwarnings: {log.read_text(errors="replace").count("warning:")}\n')
     print((var / 'about.txt').read_text().strip())
     v = f"{a.label}:host={var / 'dmhost'}" + (f",shmap={prof / 'shader_map.tsv'}" if a.list else '')
     print(f"\nbench variant:  --variant '{v}'")
