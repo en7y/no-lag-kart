@@ -6,7 +6,7 @@ Goal: update 1.8.0 (v917504) at a steady 60 fps with full-quality textures, no s
 State (2026-11-12): the game runs as a Mac app, `<dump>/Mario Kart World.app`, packed from the branch `mkw-fin`. Measured on this Mac with the host the app
 carries (150cc, the first race of the Mushroom Cup, a window on the built-in screen, sound off, players 2 to 4 scripted, one run each):
 
-| Players | Frame rate | Late frames while racing | The race's first 20 s | GPU time a frame |
+| Players | Frame rate | Late frames while racing | The 20 s from the starting grid | GPU time a frame |
 |---|---|---|---|---|
 | 1 | 60 fps | none in a whole race (10,800 frames) | none | 10.9 ms of 16.7 |
 | 2 | 60 fps | none in 3,600 frames | 4 of 1,200 | 12.4 ms of 16.7 |
@@ -14,6 +14,12 @@ carries (150cc, the first race of the Mushroom Cup, a window on the built-in scr
 | 4 | 30 fps, the game's own mode | 1 in a whole race (4,950 frames) | 2 of 600 | 25.2 ms of 33.3 |
 
 One frame is long at each scene cut: the first frame of the starting grid takes 45 ms with one player and 117 to 170 ms in split screen (TRIAGE.md, "Open").
+The late frames of the fourth column fall two seconds after the grid appears, at the next camera cut and before the start signal.
+
+A whole Grand Prix (one player, 150cc, the Mushroom Cup's four races, the award and the start of the next one: 18 minutes of the route `gp-full-150`, which
+only holds A): 60 fps throughout, 36 late frames in 64,620 (most at cuts between scenes, 13 while driving), no pipeline compiled on any of the four tracks,
+resident memory 10.2 GB in the first race and 11.2 GB at the end, nothing read back from swap.
+
 The app on this Mac was packed from `86d089e9`; the commits after it change notes and test tools only.
 
 Not tested: a TV, real controllers, sound on, other tracks and modes. The full account, with a chart of what each step did, is the build report (a document

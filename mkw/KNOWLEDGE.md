@@ -12,9 +12,11 @@ The answers to section 11's questions, in its order, then what the work taught b
 note's "Frame rate" (`dm/games/0400C3F00006E000/README.md`) and `docs/reference/frame-rate.md`.
 
 1. 1.8.0 boots to the title and races. At the end of a race the host holds 10.0 to 10.2 GB resident (GPU allocated 8.8 to 9.0 GB); macOS keeps 3.6 to 4.7 GB of
-   the Mac's memory compressed and reads nothing back from swap.
+   the Mac's memory compressed and reads nothing back from swap. Over a whole Grand Prix (18 minutes) resident memory rises to 11.2 GB and the compressed part to
+   5.6 GB, still with nothing from swap; longer sessions were not run.
 2. The base game's routes do not fit 1.8.0. The routes in `bench.tsv` are 1.8.0's own: the title takes A from about 20 s, the first race's starting grid
-   appears at about 97 s with one player and 100 s in split screen, and a 150cc race driven by holding A lasts 3 min 15 s.
+   appears at about 97 s with one player and 100 s in split screen, and a 150cc race driven by holding A lasts 3 min 15 s. Holding A also carries a Grand Prix on: the half second between two holds is the press that leaves a
+   results screen (`gp-full-150`: four races, the award, the next Grand Prix's start).
 3. The baseline (upstream with the merged warm-up list), 50cc race: 59.1 to 59.3 fps, 47 to 53 late frames a minute, GPU 14.2 ms a frame. With everything in
    `mkw-fin`, 150cc: 60.0 fps, no late frame in a whole race, GPU 10.9 ms.
 4. Game time is 1.000 of real time, with `fps_step_max 2` and with the frame step found on 1.8.0 (its frame-interval function moved: a second fingerprint).
@@ -27,7 +29,7 @@ note's "Frame rate" (`dm/games/0400C3F00006E000/README.md`) and `docs/reference/
    one fragment shader: a pipeline specialized from a base with open colour state ran it several times slower (`pso_whole`), and one invocation computes all
    six faces whatever the target's size (`fs_split`).
 7. With the placeholder list the app's first start had 116 long frames in 75 s at the title. With the merged list (15,062 rows) and a warm archive, no long
-   frame of a start or a race came from a pipeline; "Preparing shaders" takes about 9 s.
+   frame of a start or a race came from a pipeline, on any of the Mushroom Cup's four tracks; "Preparing shaders" takes about 9 s.
 8. Game Mode is off for the packed app (`LSSupportsGameMode` false in its Info.plist). Fullscreen, on the ProMotion screen or a TV: not measured (no TV was
    connected; every run was a window on the built-in screen).
 9. The FSWZADD shaders: not looked at. The screenshots checked from one, two, three and four player races show no fault.
