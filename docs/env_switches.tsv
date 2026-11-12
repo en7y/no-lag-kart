@@ -155,6 +155,7 @@ DM_NVN_FB_SNAP	switch	Draws that sample a colour attachment of their own render 
 DM_NVN_FB_TILE	switch	`0` makes such draws that sample the attachment at their own pixel (a projective sample at the vertex shader's screen varying) read a snapshot too, instead of the tile
 DM_NVN_FLUSH_FILL	switch	`0` starts a new GPU texture in a CPU-writable pool as zeros; by default one whose storage the game flushed before its first use is filled from that storage once
 DM_NVN_FRAMES	diagnostic	`=<N>` prints the NVN call table frame by frame for the first N frames (default 3)
+DM_NVN_FS_SPLIT	switch	`=<fragment shader key>:<pixels>[,...]` makes the draws of those fragment shaders into targets of up to that many pixels once for each colour attachment they write, in place of the profile's `fs_split` list; `0` turns the list off (`nvn_mtl.m` `fs_split_draw`; needs whole pipelines, `pso_whole`)
 DM_NVN_FUSE_CHECK	diagnostic	`=1` checks pass merging in the same frame: renders the merged passes again apart and logs the comparison of the attachments every time
 DM_NVN_GEOMETRY_COLOR	switch	full retains inactive geometry color attachments; default omits them only when attachment bounds and state prove equivalence.
 DM_NVN_GEOMETRY_COMPUTE	diagnostic	split ends the geometry compute encoder after each stage for comparison; default combines compatible stages.
@@ -170,7 +171,7 @@ DM_NVN_GEO_MESH_RUN	switch	`0` dispatches every mesh geometry draw on its own; b
 DM_NVN_GPUPROF	diagnostic	`=<f>`, `<f1>-<f2>` or `every:<n>`: logs the GPU start and duration of every encoder of those frames (`[gpuprof]` lines from Metal 4 counter heap timestamps)
 DM_NVN_GPU_STORAGE	switch	`0` stops what the GPU writes into a texture in storage the CPU can read (a GPU texture, or one uploaded from its storage) from being written into that storage on the GPU (on by default; `gsb_target`, `gsb_store`), to measure it
 DM_NVN_GPU_TS	switch	`submission` or `segment_gaps`: what timestamp reports record instead of the default `segment` (the GPU start / end of the segment holding each report, without the GPU's idle time between the submission's command buffers): one time for the whole submission, or segment times with that idle time
-DM_NVN_GPU_TS_PAD	switch	`=<factor>` (1.0 to 2.0, default 1) stretches each submission's reported GPU times by the factor, GPU headroom for a game's dynamic resolution (`nvn_mtl.m` `ts_pad`)
+DM_NVN_GPU_TS_PAD	switch	`=<factor>` (1.0 to 2.0, default 1) stretches each frame's reported GPU times by the factor, from the GPU start of the frame's first submission: GPU headroom for a game's dynamic resolution, also when the game times its frame from a report in one submission to a report in another (`nvn_mtl.m` `ts_pad`, `pad_begin`)
 DM_NVN_HILITE	diagnostic	`=<fragment shader key>,…`: those draws use a solid colour instead (magenta, green, cyan, yellow, blue, white in order), to tell wrong geometry from wrong shading
 DM_NVN_INDLOG	diagnostic	`=<n>`: the first n indirect draws (and those of pass-dumped frames) log their arguments at encode and as the GPU left them once the submission completed, with the first indices
 DM_NVN_IXCLOG	diagnostic	`=<n>` logs the first n indirect draw and dispatch conversions (record to arguments) once the GPU has run them
@@ -223,6 +224,7 @@ DM_NVN_TEXSNAP	diagnostic	`=<in-frame pass index>,…`: with `DM_NVN_TEXDUMP`, c
 DM_NVN_TREG_ID	diagnostic	`=<n>` logs every registration of texture ID n: what it holds from then on, and the frame being recorded
 DM_NVN_TSV	diagnostic	`=<path>` writes the per-frame NVN call table and timing rows (frame, metric, value) to a TSV, read by `scripts/bench.py`
 DM_NVN_TSV_CALLS	diagnostic	`0` makes `DM_NVN_TSV` write only the timing rows, without the call counts (about two thirds of the file)
+DM_NVN_TS_LOG	diagnostic	`=<frame>` logs every counter timestamp report of three frames from that one: its submission, type and segment, the time the game reads from it and where it is written. How a game brackets its GPU work, the time its dynamic resolution goes by (`nvn_mtl.m` `ts_log_report`)
 DM_NVN_UB	diagnostic	`="name=item,…;…"`: alternating measurement in one run; odd phases of `DM_NVN_UB_N` frames (default 180) take one category in turn (`@set:<global>=<value>` or dropped shader keys) and log present times
 DM_NVN_UBD_MEMO	diagnostic	`0` scans the deferred uniform update list for every lookup instead of remembering answers per range until the list changes (for timing)
 DM_NVN_UBP_CHECK	diagnostic	`=1` checks every uniform shadow made from memory: the pass ends, the updates land, the replay waits for the GPU and compares (a difference is a red line; slow)

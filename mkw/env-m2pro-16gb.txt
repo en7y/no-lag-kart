@@ -1,3 +1,15 @@
+# Mario Kart World 1.8.0 on a 16 GB M2 Pro MacBook Pro (macOS 26.7): the settings this Mac was measured with (mkw/README.md).
+# Lines that start with # are comments. A file of the same form at ~/Library/Application Support/nxnative/0400C3F00006E000/env.txt overrides these.
+
+# Handheld mode: the game draws 1080p there, which this GPU holds at 60 fps with one and two players (30 fps with three and four, the game's own split-screen mode)
 DM_OPMODE=0
+# MetalFX scales the 1080p picture up to the window or the screen
 DM_PRESENT_UPSCALE=metalfx
+# A late frame does not lengthen the hold of the frames after it
 DM_FPS_HOLD=off
+# GPU headroom: the game reads its frame's GPU time a quarter longer than it was and lowers its render size sooner. No late frame in a 150cc race with two, three and four
+# players. 1.20 keeps the full render size with one player and leaves 3 to 4 late frames a minute in split screen
+DM_NVN_GPU_TS_PAD=1.25
+# The GPU clock is kept at its top. At auto the clock falls with the load and, with the headroom above, the game draws a fifth to a quarter smaller with one player.
+# About 4.5 W more in a race: auto on battery
+DM_GPU_KEEP=1

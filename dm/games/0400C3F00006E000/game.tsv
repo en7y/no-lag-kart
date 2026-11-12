@@ -54,5 +54,10 @@ render_cond	on
 # Render pipelines are compiled whole, with their colour state: specialized from a base that leaves it open, the first reflection map's filter (4744589bb8f9f7dd) ran three
 # times slower on the GPU (M2 Pro, 1.8.0, a race: GPU time 14.1 -> 12.4-12.9 ms, late presents 39-48 -> 0.7-6 a minute; README, "Frame rate")
 pso_whole	on
-# Split outputs: the reflection maps' filter draws six cube faces from one fragment shader, 32 samples a face, into targets of 32x32 down to 1x1 (FS_SPLIT_TSV_NOTE)
+# The reflection maps' filters write the six faces of a cube map level from one fragment shader, 32 samples a face, into targets of 32x32 down to 1x1: one invocation computes all
+# six, and on such a target that is what the pass costs. Drawn once for each face, a pipeline compiled whole keeps one face's part: each filter up to the size at which that
+# pays (M2 Pro: the cube array filter at every size, the cube filter up to 8x8; README, "Frame rate")
 fs_split	765844f5609bb11b:1024 4744589bb8f9f7dd:64
+# Metal's encoding on a thread of its own: in split screen the replay thread translates up to 11,000 draws a frame, and encoding them itself was 3 ms of the 27 a frame
+# took it with four players (M2 Pro; a race with one player is unchanged). DM_NVN_ENC_THREAD and the launcher's Encode thread override it
+enc_thread	on

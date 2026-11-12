@@ -101,6 +101,8 @@ SWITCH_BINDING = [
     ('draw_barriers', '', {'what': 'draw passes ordered by the game\'s own barriers', 'now': 'game', 'goal': 'host', 'purpose': 'frame rate', 'why': f'what NVN specifies: {DEFAULT_SOON}'}),
     ('pso_whole', '', {'what': 'render pipelines compiled whole, with their colour state', 'now': 'game', 'goal': 'host', 'purpose': 'frame rate',
      'why': f'a fragment shader can run several times slower in a pipeline specialized from a base with open colour state: {DEFAULT_SOON}'}),
+    ('fs_split', '', {'what': 'fragment shaders whose draws are made once for each colour attachment they write', 'now': 'game', 'goal': 'game', 'purpose': 'frame rate',
+     'why': "which shaders compute their outputs one by one, and up to which target size the split pays, is each shader's own: measured, then listed"}),
     ('mem_map_limit', '', {'what': 'MapPhysicalMemory limited to the application pool', 'now': 'game', 'goal': 'host', 'purpose': 'memory',
      'why': "Horizon's limit; off by default because Ace Attorney Investigations Collection maps a little more than its profile's 1 GB pool, which is the thing to fix"}),
     ('alloc_big_align', '', {'what': "StandardAllocator blocks of 64 KB and more aligned to 64 KB", 'now': 'game', 'goal': 'host', 'purpose': 'memory',

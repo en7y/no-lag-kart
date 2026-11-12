@@ -5,4 +5,10 @@
 # save changes: `--shots 38,66,100,150` shows the title, the fly-over and two moments of the race.
 gp-race1	40:A*8/3,96:A~9.5*18/10	110	90	Grand Prix, Mushroom Cup, 50cc: 90 s of the first race (Mario Bros. Circuit), driven by holding A
 gp-race1-long	40:A*8/3,96:A~9.5*24/10	110	200	the same race to its end: hitches and memory over a whole race
+gp-race1-150	40:A*6/3,56.5:Right,57.2:Right,58:A,61:A,96:A~9.5*18/10	110	90	the same race at 150cc (the class screen's cursor starts on 50cc: Right twice)
+gp-race1-150-long	40:A*6/3,56.5:Right,57.2:Right,58:A,61:A,96:A~9.5*24/10	110	200	the 150cc race to its end
+gp-start-150	40:A*6/3,56.5:Right,57.2:Right,58:A,61:A,96:A~9.5*5/10	100	35	the 150cc race's start: the end of the countdown and the first 30 s, 24 karts in view (the heaviest part of a race)
+gp150-2p	40:A,43:Down,46:A,50:A,53.5:A,57.5:A,61.5:A,64:Right,64.7:Right,65.5:A,68.5:A,104:A~9.5*9/10	120	60	2 players, split screen: Grand Prix, Mushroom Cup, 150cc, 60 s of the first race. Players 2 to 2 come from mkw/test/routes/gp150-2p.ctl (the test host's p<n>: lines, mkw/test/host_with_ctl.sh)
+gp150-3p	40:A,43:Down,44:Right,46:A,50:A,53.5:A,57.5:A,61.5:A,64:Right,64.7:Right,65.5:A,68.5:A,104:A~9.5*9/10	120	60	3 players, split screen: Grand Prix, Mushroom Cup, 150cc, 60 s of the first race. Players 2 to 3 come from mkw/test/routes/gp150-3p.ctl (the test host's p<n>: lines, mkw/test/host_with_ctl.sh)
+gp150-4p	40:A,43:Down,44:Right,45:Right,46:A,50:A,53.5:A,57.5:A,61.5:A,64:Right,64.7:Right,65.5:A,68.5:A,104:A~9.5*9/10	120	60	4 players, split screen: Grand Prix, Mushroom Cup, 150cc, 60 s of the first race. Players 2 to 4 come from mkw/test/routes/gp150-4p.ctl (the test host's p<n>: lines, mkw/test/host_with_ctl.sh)
 title		50	30	the title's 3D scene with no input

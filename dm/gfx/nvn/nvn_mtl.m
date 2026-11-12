@@ -2188,7 +2188,8 @@ static uint64_t seg_idle_before(seg_clk *sc, uint64_t ns, uint64_t c0) {
 // first submission, so the game measures its GPU work that much longer and lowers its resolution until the padded time fits its budget: the real GPU time then stays under the frame by about
 // 1 - 1/factor (1.10: about 9 %), room for the host's own GPU work and for spikes. Splatoon Raiders, once the gap-free timestamps let it see the real GPU time, filled the frame
 // (GPU median 18.7 ms against 16.7) and dropped frames. A tuning switch, off by default
-// From the frame's start, not from each submission's own: PAD_FRAME_NOTE
+// From the frame's start, not from each submission's own: a game that opens its frame's GPU timing in its first submission and closes it in its last read the same time whatever
+// the factor (Mario Kart World: 23 submissions a frame with two players, 42 with four; DM_NVN_TS_LOG lists a frame's reports)
 static uint64_t g_pad_frame = UINT64_MAX, g_pad_base;   // the frame of the submission whose reports are being written, and the GPU start of that frame's first submission (0: not known); post_run sets them, under g_post_mu
 static double ts_pad(void) {
     static double v = -1;
@@ -14150,7 +14151,8 @@ static int long_pass_split_due(void) {
 static void long_pass_split_geo(void) { if (g_enc && long_pass_split_due()) { rp_end(); g_lps_splits++; g_cut_force = 1; sub_cut(); g_cut_force = 0; } }
 // ---------- Split outputs (profile key fs_split, DM_NVN_FS_SPLIT=<key>:<pixels>[,...]; DM_NVN_FS_SPLIT=0 turns it off) ----------
 // A fragment shader that computes each of its colour outputs on its own runs all of them in one invocation, and on a target of a few pixels that one invocation is what the pass
-// costs: FS_SPLIT_NOTE
+// costs: Mario Kart World's reflection map filter (the six faces of a cube map level as six attachments, 32 samples of the source for each face, 193 in one invocation) took 55 to
+// 60 us a pass at 8x8, 4x4, 2x2 and 1x1 alike, and takes 22 drawn a face at a time (M2 Pro; docs/reference/frame-rate.md, "A fragment shader that computes its outputs one by one").
 // The profile lists such shaders, each with the largest target (in pixels) at which the split pays. A listed shader's draw is made once for each attachment it writes, with the
 // channel masks of the others at 0: with pipelines compiled whole (pso_whole_all) the compiler knows the masks and keeps only that attachment's part of the shader; in a
 // pipeline specialized from a base every draw would run the whole shader, so without whole pipelines the list is not used.
