@@ -275,18 +275,18 @@ static void native_mesh(NSString *dir) {
     g_mtk.ms = live;
     NvProg *raster = [NvProg new]; raster->sh[1] = fragment;
     uint64_t before = g_bp_pso_n;
-    id<MTLRenderPipelineState> demanded = mtk_pso(raster);
+    id<MTLRenderPipelineState> demanded = mtk_pso(raster, 0);
     EXPECT("first demand returns the required mesh pipeline", 1, demanded != nil);
     EXPECT("duplicate live shader demand does not compile", before, g_bp_pso_n);
     EXPECT("duplicate live shader uses the warmed pipeline", 1, demanded == item->object);
-    id<MTLRenderPipelineState> again = mtk_pso(raster);
+    id<MTLRenderPipelineState> again = mtk_pso(raster, 0);
     EXPECT("second demand reuses the pipeline", 1, again == demanded);
     EXPECT("second demand does not compile", before, g_bp_pso_n);
 
     g_shcache = nil;
     warm_enqueue(item); warm_claim();
     g_mtk.ms = g_shcache[@"warm-ms"]; raster->sh[1] = g_shcache[@"warm-fs"];
-    id<MTLRenderPipelineState> warmed = mtk_pso(raster);
+    id<MTLRenderPipelineState> warmed = mtk_pso(raster, 0);
     EXPECT("first demand with identical shaders uses the warm pipeline", 1, warmed == item->object);
     EXPECT("warm hit does not compile", before, g_bp_pso_n);
     if (demanded && warmed) {
@@ -305,7 +305,7 @@ static void native_mesh(NSString *dir) {
         warm_enqueue(item); warm_claim();
         EXPECT("different depth entry is not claimed", count, g_pso_mtk.n);
         g_mtk.ms = other_depth;
-        id<MTLRenderPipelineState> alternate = mtk_pso(raster);
+        id<MTLRenderPipelineState> alternate = mtk_pso(raster, 0);
         EXPECT("different depth entry builds its own pipeline", before + 1, g_bp_pso_n);
         EXPECT("different depth entry is not the warmed pipeline", 1, alternate && alternate != warmed);
         if (alternate) { uint8_t pixel[4]; pixels(alternate, 1, pixel); EXPECT("alternate entry preserves the clear color", 1, pixel[0] == 255 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] == 255); }
