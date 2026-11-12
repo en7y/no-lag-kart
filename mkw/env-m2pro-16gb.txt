@@ -7,8 +7,8 @@ DM_OPMODE=0
 DM_PRESENT_UPSCALE=metalfx
 # A late frame does not lengthen the hold of the frames after it
 DM_FPS_HOLD=off
-# GPU headroom: the game reads its frame's GPU time a quarter longer than it was and lowers its render size sooner. No late frame in a 150cc race with two, three and four
-# players. 1.20 keeps the full render size with one player and leaves 3 to 4 late frames a minute in split screen
+# GPU headroom: the game reads its frame's GPU time a quarter longer than it was and lowers its render size sooner. No late frame in a minute of a 150cc race with two, three
+# and four players (at 1.20: 3 to 4 a minute in split screen). One player draws within a few per cent of its full size at it
 DM_NVN_GPU_TS_PAD=1.25
 # The GPU clock is kept at its top. At auto the clock falls with the load and, with the headroom above, the game draws a fifth to a quarter smaller with one player.
 # About 4.5 W more in a race: auto on battery
