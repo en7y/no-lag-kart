@@ -81,6 +81,24 @@ int main(void){@autoreleasepool{
     rc_note((uint64_t)rec,1);
     CHECK("a later timestamp restores known zero after the opaque writer",rc_value((uint64_t)rec,&x)&&x==0);
     rc_forget();atomic_store(&g_rc_complete,completed);}
+    // The commit walks the pages noted in this submission (g_sbw_ls), not the whole set of 65,536 slots: every page a shader wrote is a live GPU write afterwards, a page that
+    // holds only a report is not, and the next submission's commit walks its own pages alone
+    {g_done+=100000;pend_reset();uint64_t d0=g_done;const uint64_t pb=0x7300000000ull;enum{NP=5000};
+    for(int i=0;i<NP;i++)sbw_note(pb+(uint64_t)i*0x3000+8,16,SBW_GPU);
+    uint64_t rp=0;for(uint64_t c=pb+0x1000;!rp;c+=0x3000){int hit=0;for(int i=0;i<NP&&!hit;i++)hit=gw_slot((pb+(uint64_t)i*0x3000)>>12)==gw_slot(c>>12);if(!hit)rp=c;}   // a page between them whose slot in the write table none of them takes
+    sbw_note(rp,16,SBW_REPORT);
+    CHECK("the set counts the pages noted",g_nsbw==NP+1&&!g_sbw_over);
+    int once=1;{static uint8_t seen[SBW_N];memset(seen,0,sizeof seen);for(int i=0;i<g_nsbw;i++){unsigned k=g_sbw_ls[i];if(seen[k]||g_sbwp[k].gen!=g_pend_gen)once=0;seen[k]=1;}}
+    CHECK("the list names each slot taken once",once);
+    uint64_t w0=g_stat_sbw_walk;gw_commit(d0+10);
+    CHECK("the commit looks at the pages noted, not at the whole set",g_stat_sbw_walk-w0==NP+1);
+    int live=0;for(int i=0;i<NP;i++)live+=gw_live(pb+(uint64_t)i*0x3000+8,pb+(uint64_t)i*0x3000+24);
+    CHECK("every page a shader wrote is a live GPU write after the commit",live==NP);
+    CHECK("a page that holds only a report is not",!gw_live_in(g_gw,rp,rp+16));
+    pend_reset();sbw_note(pb+0x100000000ull,16,SBW_GPU);w0=g_stat_sbw_walk;gw_commit(d0+11);
+    CHECK("the next submission's commit walks its own page alone",g_nsbw==1&&g_stat_sbw_walk-w0==1&&gw_live(pb+0x100000000ull,pb+0x100000010ull));
+    g_done=d0+11;
+    CHECK("and none is live once their fences are done",!gw_live_in(g_gw,pb+8,pb+24)&&!gw_live_in(g_gw,pb+0x100000000ull,pb+0x100000010ull));}
     pend_reset();
     printf("t_sbw: %d checks, %d failed\n",checks,failed);return failed!=0;
 }}

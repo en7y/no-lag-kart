@@ -1312,11 +1312,17 @@ static int pend_room(int nodes) {
 // and the pass ended before each of its HUD draws (about 19 a frame, each loading and storing its 2304x1296 target). 65,536 slots (1 MB) keep the load near a fifth
 enum { SBW_BITS = 16, SBW_N = 1 << SBW_BITS, SBW_WPAGES = 64, SBW_WN = 64 };
 static struct { uint64_t page; uint32_t gen; uint8_t src; } g_sbwp[SBW_N]; static int g_nsbw, g_sbw_over;   // src: SBW_* bits; pages in the set this submission; over: a write could not be kept (set full, size not known)
+// The slots taken in this submission, in the order taken: what its commit walks (gw_commit). The commit used to look at every slot of the set for those of its generation, 65,536
+// a commit since the set grew for Donkey Kong Bananza: a megabyte read for each commit with one page in the set. Mario Kart World commits 23 times a frame with two players and
+// 42 times with four: the walk was the whole of mtl_sub_commit's own time in a sample of its replay thread, 1.6 ms of 25 a frame with four players (M2 Pro;
+// docs/reference/frame-rate.md, "A commit looked at every slot of the page set its submission's shaders wrote")
+_Static_assert(SBW_BITS <= 16, "g_sbw_ls holds a slot of the set in 16 bits");
+static uint16_t g_sbw_ls[SBW_N]; static uint64_t g_stat_sbw_walk;   // walk: the slots the commits have looked at (t_sbw)
 static uint64_t g_sbw_wlo[SBW_WN], g_sbw_whi[SBW_WN]; static int g_nsbw_w;   // the wide writes of this submission
 static int sbw_slot(uint64_t pg, int add) {   // open addressing; −1 = not there (or no room to add)
     unsigned h = (unsigned)((pg * 0x9E3779B97F4A7C15ull) >> (64 - SBW_BITS)) & (SBW_N - 1);
     for (int i = 0; i < 64; i++, h = (h + 1) & (SBW_N - 1)) {
-        if (g_sbwp[h].gen != g_pend_gen) { if (!add) return -1; g_sbwp[h].page = pg; g_sbwp[h].gen = g_pend_gen; g_sbwp[h].src = 0; g_nsbw++; return (int)h; }
+        if (g_sbwp[h].gen != g_pend_gen) { if (!add) return -1; g_sbwp[h].page = pg; g_sbwp[h].gen = g_pend_gen; g_sbwp[h].src = 0; g_sbw_ls[g_nsbw++] = (uint16_t)h; return (int)h; }
         if (g_sbwp[h].page == pg) return (int)h; }
     return -1;
 }
@@ -1972,7 +1978,8 @@ static void gw_commit(uint64_t fence) {
         gw_put_in(g_gw, g_pend_lo[e], g_pend_hi[e], fence, done);
         if (g_pend_kind[e] == 1 && g_pend_upd[e] && um_on()) { const upd_ent *u = &g_upd[g_pend_upd[e] - 1]; um_put(g_pend_lo[e], g_pend_hi[e], (const uint8_t *)u->buf.contents + u->off + (g_pend_lo[e] - u->lo), fence, done); }
         else gw_put_in(g_gwx, g_pend_lo[e], g_pend_hi[e], fence, done); }
-    if (g_nsbw) for (int i = 0; i < SBW_N; i++) if (g_sbwp[i].gen == g_pend_gen && (g_sbwp[i].src & SBW_GPU)) gw_put(g_sbwp[i].page << 12, (g_sbwp[i].page + 1) << 12, fence, done);   // reports: below
+    g_stat_sbw_walk += (uint64_t)g_nsbw;
+    for (int i = 0; i < g_nsbw; i++) { unsigned k = g_sbw_ls[i]; if (g_sbwp[k].src & SBW_GPU) gw_put(g_sbwp[k].page << 12, (g_sbwp[k].page + 1) << 12, fence, done); }   // the pages noted in this submission (g_sbw_ls); reports: below
     for (int i = 0; i < g_nsbw_w; i++) gw_put(g_sbw_wlo[i], g_sbw_whi[i], fence, done);
     int ring = g_nhw_sub <= HW_N && (!g_nhw_sub || g_hwr[(g_nhwr + (uint64_t)g_nhw_sub - 1) % HW_N].fence <= done);   // the slots they take have finished (the farthest is the newest of them)
     for (int i = 0; i < g_nhw_sub; i++) { uint64_t a = g_hw_sub[i];
