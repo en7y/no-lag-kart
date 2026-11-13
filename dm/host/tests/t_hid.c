@@ -698,9 +698,11 @@ static void t_tabletop(void) {
     h_hid_BindStyleEv(&(uint32_t){0}, e0, 0); h_hid_BindStyleEv(&(uint32_t){1}, e1, 0); h_hid_BindStyleEv(&(uint32_t){NPAD_HANDHELD}, eh, 0);
     unsetenv("DM_OPMODE_MULTI");
     CHECK(h_hid_ShowCtrl(info, arg) == RES_OK && info[0] == 2 && g_mode == 1, "DM_OPMODE_MULTI unset: two players leave the mode alone");
+    CHECK(dm_hid_applet_players() == 2, "the applet's count is kept for the host (dm_hid_applet_players)");
     setenv("DM_OPMODE_MULTI", "0", 1);
     arg[0] = 1; CHECK(h_hid_ShowCtrl(info, arg) == RES_OK && g_mode == 1, "one player wanted: console mode stays");
     arg[0] = arg[1] = 3; CHECK(h_hid_ShowCtrl(info, arg) == RES_CTRL_CANCELED && g_mode == 1, "a canceled applet (three wanted, two there): console mode stays");
+    CHECK(dm_hid_applet_players() == 2, "a canceled applet leaves the count");
     arg[0] = arg[1] = 2; g_signals = 0;
     CHECK(h_hid_ShowCtrl(info, arg) == RES_OK && g_mode == 0, "two players found: handheld mode");
     CHECK(info[0] == 2 && info[1] == NPAD_NO1 && dm_player_npad(0) == NPAD_NO1 && g_signals == 0, "on its stand: player 1 stays on No1 and no style event fires");

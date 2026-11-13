@@ -712,6 +712,10 @@ int dm_players_reported(void) {   // a pair of Joy-Cons split into two npads is 
 // mode holds 60 and 30 there, and so does console mode left at this applet (mkw/KNOWLEDGE.md, section 0). To handheld the console goes on its stand (g_tabletop): no npad
 // moves, the game is told of the mode alone (it sets a 1920x1080 window crop and goes on; told in a race with player 1 moved to Handheld, it opened this applet again and
 // the race was gone). A game that later opens the applet for one player is not sent back: Mario Kart World opens none for one player, so no run has shown that way
+// The players the controller applet last found (0: no applet yet), for what the host chooses by the number of views (DM_PRESENT_UPSCALE_PLAYERS). As with the mode above, a game
+// that opens no applet for one player leaves the count of its last split screen until it is started again
+static _Atomic int g_applet_found;
+int dm_hid_applet_players(void) { return atomic_load(&g_applet_found); }
 static void multi_opmode(int players) {
     const char *e = getenv("DM_OPMODE_MULTI"); if (!e || !*e) return;
     int to = atoi(e) != 0; if (dm_opmode() == to) return;
@@ -752,6 +756,7 @@ static Result ctrl_support(int32_t *info, const int8_t *arg) {
     }
     if (arg && arg[1] > 0 && count > arg[1]) count = arg[1];   // a split pair of Joy-Cons on player 1 can still be one too many
     if (arg && arg[0] >= 2 && !canceled) multi_opmode(arg[0]);
+    if (!canceled) atomic_store(&g_applet_found, count);
     if (info) { info[0] = count; info[1] = (int32_t)connected_id(); }
     return canceled ? RES_CTRL_CANCELED : RES_OK;
 }

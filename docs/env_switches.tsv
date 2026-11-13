@@ -276,6 +276,7 @@ DM_PRESENT_LINK	switch	Present pacing: `0` acquires the drawable itself, `1` (th
 DM_PRESENT_LINK_AUTO	switch	`0` keeps the 60 Hz display link in fullscreen on a fixed-rate screen whose presents keep turning a refresh late; by default two windows of 300 presents with 8 or more such turns turn it off until the window leaves fullscreen, and the present thread takes the drawables
 DM_PRESENT_SNAP	player	`=<n>`: present snapshots, a ring of n host textures (2 to 4; `1` = 2) the presents are copied to so the game's swapchain texture is free at once; `0` off (default: the profile's `present_snap`)
 DM_PRESENT_UPSCALE	player	`metalfx` scales a picture smaller than its rectangle on the screen through MetalFX's spatial scaler; `off` (the default) scales it bilinearly
+DM_PRESENT_UPSCALE_PLAYERS	player	`=<n>`: `DM_PRESENT_UPSCALE=metalfx` only while the game's controller applet has found at most n players; with more, the present scales bilinearly and the scaler's GPU time (1.2 ms a frame at 2560x1440 to 3024x1701 on an M2 Pro) is the game's. Unset or `0`: whatever the players
 DM_PREV_PROGRAM	switch	What `oe::GetPreviousProgramIndex` answers (default -1, started from HOME); `oe::ExecuteProgram` sets it for the program it starts
 DM_PROBE	diagnostic	`=module:offset,…` (Mac only): puts a `brk` at each guest address and on every hit prints the thread, registers, strings they point to and a backtrace, then runs the original instruction
 DM_PROBE_ALL	diagnostic	Set: probe hits (`DM_PROBE`) also print x8–x18

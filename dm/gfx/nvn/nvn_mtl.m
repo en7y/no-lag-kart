@@ -16362,6 +16362,16 @@ static int fx_mode(void) {
     MLOG("present upscaling (DM_PRESENT_UPSCALE): %s", v ? "metalfx, MetalFX's spatial scaler where the picture is shown larger than the game renders it" : "off, bilinear");
     return g_fx_mode = v;
 }
+// DM_PRESENT_UPSCALE_PLAYERS=<n>: MetalFX scales the present while the game's controller applet has found at most n players, and with more the present scales bilinearly, as with
+// DM_PRESENT_UPSCALE=off. The scaler is GPU time of every frame whatever the game draws (2560x1440 to 3024x1701 on an M2 Pro: 1.2 ms), which a split screen at the game's 30 fps
+// has least of: Mario Kart World in console mode with four players, fullscreen, 8 frames a minute on screen a refresh too long with it and 1 without (GPU 30.3 ms of 33.3)
+int dm_hid_applet_players(void);
+static int fx_players_over(void) {
+    static int n = -1, told; if (n < 0) { const char *e = getenv("DM_PRESENT_UPSCALE_PLAYERS"); n = e && *e ? atoi(e) : 0; if (n < 0) n = 0; }
+    if (!n || dm_hid_applet_players() <= n) return 0;
+    if (!told) { told = 1; MLOG("present upscaling: %d players, more than DM_PRESENT_UPSCALE_PLAYERS=%d: the present scales bilinearly from here", dm_hid_applet_players(), n); }
+    return 1;
+}
 // MetalFX scales the content (cw x ch) to its rectangle on the canvas (vp) when the rectangle is at least as large in both directions and larger in one
 static int fx_wanted(MTLViewport vp, NSUInteger cw, NSUInteger ch) {
     NSUInteger w = (NSUInteger)vp.width, h = (NSUInteger)vp.height;
@@ -16371,7 +16381,7 @@ static int fx_wanted(MTLViewport vp, NSUInteger cw, NSUInteger ch) {
 // remake_wait: fx is the present thread's, whose textures presents still on the GPU may read: a new scaler waits for them and for FX_REMAKE_PRESENTS presents since the last
 static id<MTLTexture> fx_encode(fx_state *fx, id<MTL4CommandBuffer> cb, id<MTLTexture> raw, const NSUInteger r[4], MTLViewport vp, MTLPixelFormat out_pf, int remake_wait) {
     NSUInteger cw = r[2], ch = r[3], ow = (NSUInteger)vp.width, oh = (NSUInteger)vp.height;
-    if (fx_mode() != 1 || !fx_wanted(vp, cw, ch)) return nil;
+    if (fx_mode() != 1 || fx_players_over() || !fx_wanted(vp, cw, ch)) return nil;
     if (!fx->sc || fx->in.width != cw || fx->in.height != ch || fx->in.pixelFormat != raw.pixelFormat || fx->out.width != ow || fx->out.height != oh || fx->out.pixelFormat != out_pf) {
         NSUInteger key[6] = {cw, ch, raw.pixelFormat, ow, oh, out_pf};
         if (!memcmp(key, fx->refused, sizeof key)) return nil;
