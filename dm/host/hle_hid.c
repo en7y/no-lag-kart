@@ -293,7 +293,10 @@ static void ctl_start(void) {
     pthread_t th; if (!pthread_create(&th, NULL, ctl_main, strdup(e))) { pthread_detach(th); LOG("DM_CTL: reading key presses and screenshot requests from %s", e); }
 }
 
-static uint32_t connected_id(void) { return dm_opmode() == 0 ? NPAD_HANDHELD : NPAD_NO1; }
+// Tabletop: the console out of its dock and on its stand, the controllers off its rails. The game sees handheld mode (hle_oe.c) and player 1 stays on No1, so going there from
+// console mode moves no npad. DM_OPMODE_MULTI=0 goes there when the controller applet has found the two or more players a game asked for (multi_opmode); console mode ends it
+static _Atomic int g_tabletop;
+static uint32_t connected_id(void) { return dm_opmode() == 0 && !atomic_load(&g_tabletop) ? NPAD_HANDHELD : NPAD_NO1; }
 uint32_t hle_hid_connected_npad(void) { return connected_id(); }   // nfp's NFC device sits on player 1's controller (hle_sdk16.c)
 // Player n is on No n in handheld mode too, where No1 stays empty: games take Handheld and No1 both for player 1, so a second controller on No1 would act as player 1 again
 uint32_t dm_player_npad(int p) { return p <= 0 ? connected_id() : (uint32_t)p; }
@@ -332,7 +335,7 @@ static _Atomic uint32_t g_single_keep[DM_PLAYERS];   // 1: the left Joy-Con stay
 static uint32_t g_styles_supported = 0xffffffffu;
 // The styles the game supports for pad p's Joy-Cons: a Joy-Con 2 style counts as its plain one
 static uint32_t joy_supported(int p) { uint32_t s = g_styles_supported; if (p >= 0 && p < DM_PLAYERS && atomic_load(&g_joy_two[p])) s |= (s >> 10 & (STYLE_JOYDUAL | STYLE_JOYLEFT | STYLE_JOYRIGHT)); return s; }
-static int joy_active(int p) { return p >= 0 && p < DM_PLAYERS && atomic_load(&g_joy_sides[p]) && !(p == 0 && dm_opmode() == 0); }
+static int joy_active(int p) { return p >= 0 && p < DM_PLAYERS && atomic_load(&g_joy_sides[p]) && !(p == 0 && connected_id() == NPAD_HANDHELD); }
 static int joy_split(int p) { return atomic_load(&g_joy_sides[p]) == 3 && (atomic_load(&g_single_mask) >> p & 1) && (joy_supported(p) & (STYLE_JOYLEFT | STYLE_JOYRIGHT)) == (STYLE_JOYLEFT | STYLE_JOYRIGHT); }
 // The npad the other Joy-Con of pad p takes when the pair is split: the lowest supported npad No2..No8 that has no player of its own and is not another split's; -1 for none
 static int split_target(int p) {
@@ -395,10 +398,11 @@ static void styles_sync(void) {
     }
     pthread_mutex_unlock(&g_style_lock);
 }
-// The console mode changed (dm_set_opmode): player 1 moves between Handheld and No1 (connected_id), as taking the Joy-Cons off the console's rails or putting them back does,
+// The console mode changed (dm_set_opmode): player 1 moves between Handheld and No1 (connected_id), as taking the Joy-Cons off the console's rails or putting them back does
+// (not on the way to tabletop, where player 1 stays on No1, and console mode ends tabletop),
 // and Joy-Cons held as devices stop or start being npads of their own (joy_active). Hades II, sent to Handheld by the controller applet in handheld mode, kept reading that
 // npad, empty once docked, and took no input again (GitHub issue #2143)
-void dm_hid_opmode_changed(void) { styles_sync(); }
+void dm_hid_opmode_changed(void) { if (dm_opmode() != 0) atomic_store(&g_tabletop, 0); styles_sync(); }
 // Joy-Cons as devices (dm_input.h): which a pad holds, then each one's buttons and stick. The style events tell the game that its npads changed
 void dm_joy_attach(int p, uint32_t sides) {
     if (p < 0 || p >= DM_PLAYERS) return;
@@ -701,6 +705,20 @@ int dm_players_reported(void) {   // a pair of Joy-Cons split into two npads is 
     int n = 0; for (int p = 0; p < DM_PLAYERS; p++) n += reported(p) + (reported(p) && joy_active(p) && joy_split(p) && split_target(p) >= 0);
     return n;
 }
+// DM_OPMODE_MULTI=<0|1>: the operation mode from the moment the controller applet has found the two or more players a game asked for; unset, the mode stays. A game picks its
+// render size and detail by the mode, and where a Mac's GPU holds the console-mode picture for one view but not for a split screen, the applet is the place to change it: the
+// game is in a menu there and about to change its view count. Mario Kart World on a 16-core M2 Pro, fullscreen: console mode holds 60 fps with one player; with two it
+// makes 58.4, with three 29.6 and with four 29.3 of its 30, and 48 to 95 frames a minute stay on screen a refresh too long, its dynamic resolution at the floor. Handheld
+// mode holds 60 and 30 there, and so does console mode left at this applet (mkw/KNOWLEDGE.md, section 0). To handheld the console goes on its stand (g_tabletop): no npad
+// moves, the game is told of the mode alone (it sets a 1920x1080 window crop and goes on; told in a race with player 1 moved to Handheld, it opened this applet again and
+// the race was gone). A game that later opens the applet for one player is not sent back: Mario Kart World opens none for one player, so no run has shown that way
+static void multi_opmode(int players) {
+    const char *e = getenv("DM_OPMODE_MULTI"); if (!e || !*e) return;
+    int to = atoi(e) != 0; if (dm_opmode() == to) return;
+    LOG("hid controller applet: %d players found, the console goes %s (DM_OPMODE_MULTI=%d)", players, to ? "into its dock" : "on its stand: handheld mode, the controllers as they are", to);
+    if (!to) atomic_store(&g_tabletop, 1);
+    dm_set_opmode(to);
+}
 static Result ctrl_support(int32_t *info, const int8_t *arg) {
     int count = dm_players_reported(), canceled = 0;
     uint32_t bench_was = atomic_load(&g_benched);
@@ -733,6 +751,7 @@ static Result ctrl_support(int32_t *info, const int8_t *arg) {
         if (atomic_load(&g_benched) != bench_was) { styles_sync(); note_merged(); }   // their npads connect or disconnect: the style events tell the game
     }
     if (arg && arg[1] > 0 && count > arg[1]) count = arg[1];   // a split pair of Joy-Cons on player 1 can still be one too many
+    if (arg && arg[0] >= 2 && !canceled) multi_opmode(arg[0]);
     if (info) { info[0] = count; info[1] = (int32_t)connected_id(); }
     return canceled ? RES_CTRL_CANCELED : RES_OK;
 }

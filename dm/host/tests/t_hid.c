@@ -26,6 +26,7 @@ static int hid_clock_gettime(clockid_t clock, struct timespec *ts) { (void)clock
 static int hid_usleep(useconds_t usec) { (void)usec; if (script_hold) script_hold(); return 0; }
 #define CHECK(c, msg) do { checks++; if (!(c)) { fails++; fprintf(stderr, "FAIL: %s (line %d)\n", msg, __LINE__); } } while (0)
 int dm_opmode(void) { return g_mode; }
+void dm_set_opmode(int m) { if (g_mode == m) return; g_mode = m; dm_hid_opmode_changed(); }   // hle_oe.c's, less the notifications
 uint64_t guest_ns(void) { return 1000000000ull; }
 uint64_t now_ns(void) { return motion_now; }
 static uint64_t test_frame;   // presented frames (t_rec moves it)
@@ -687,6 +688,32 @@ static void t_touch_sampling(void) {
     g_mode = 1;
 }
 
+// DM_OPMODE_MULTI (ctrl_support → multi_opmode): the applet finding two or more players changes the operation mode. To handheld the console goes on its stand: player 1
+// stays on No1 and no style event fires. One player, a canceled applet and an unset variable leave the mode alone; console mode ends tabletop, so handheld after it is the
+// plain one, with player 1 on Handheld
+static void t_tabletop(void) {
+    static uint8_t e0[0x40], e1[0x40], eh[0x40]; int32_t info[2]; int8_t arg[8] = {2, 2};
+    g_mode = 1; dm_hid_opmode_changed(); g_prompt_answer = -1; g_prompt_join = 0;
+    ids((uint32_t[]){0, 1, NPAD_HANDHELD}, 3); dm_pad_players(3); h_hid_SetStyles(0xffffffffu);
+    h_hid_BindStyleEv(&(uint32_t){0}, e0, 0); h_hid_BindStyleEv(&(uint32_t){1}, e1, 0); h_hid_BindStyleEv(&(uint32_t){NPAD_HANDHELD}, eh, 0);
+    unsetenv("DM_OPMODE_MULTI");
+    CHECK(h_hid_ShowCtrl(info, arg) == RES_OK && info[0] == 2 && g_mode == 1, "DM_OPMODE_MULTI unset: two players leave the mode alone");
+    setenv("DM_OPMODE_MULTI", "0", 1);
+    arg[0] = 1; CHECK(h_hid_ShowCtrl(info, arg) == RES_OK && g_mode == 1, "one player wanted: console mode stays");
+    arg[0] = arg[1] = 3; CHECK(h_hid_ShowCtrl(info, arg) == RES_CTRL_CANCELED && g_mode == 1, "a canceled applet (three wanted, two there): console mode stays");
+    arg[0] = arg[1] = 2; g_signals = 0;
+    CHECK(h_hid_ShowCtrl(info, arg) == RES_OK && g_mode == 0, "two players found: handheld mode");
+    CHECK(info[0] == 2 && info[1] == NPAD_NO1 && dm_player_npad(0) == NPAD_NO1 && g_signals == 0, "on its stand: player 1 stays on No1 and no style event fires");
+    CHECK(h_hid_GetStyle(&(uint32_t){0}) == STYLE_FULLKEY && h_hid_GetStyle(&(uint32_t){1}) == STYLE_FULLKEY && h_hid_GetStyle(&(uint32_t){NPAD_HANDHELD}) == 0, "the npads are as they were docked");
+    CHECK(h_hid_ShowCtrl(info, arg) == RES_OK && g_mode == 0 && g_signals == 0, "asked again: nothing changes");
+    dm_set_opmode(1); CHECK(g_signals == 0 && dm_player_npad(0) == NPAD_NO1, "back to console mode: still no npad moves");
+    unsetenv("DM_OPMODE_MULTI"); dm_set_opmode(0);
+    CHECK(g_signals == 2 && dm_player_npad(0) == NPAD_HANDHELD, "handheld after console mode is the plain one: player 1 on Handheld");
+    setenv("DM_OPMODE_MULTI", "1", 1); g_signals = 0;
+    CHECK(h_hid_ShowCtrl(info, arg) == RES_OK && g_mode == 1 && info[1] == NPAD_NO1 && g_signals == 2, "DM_OPMODE_MULTI=1 from handheld: console mode, player 1 moves to No1");
+    unsetenv("DM_OPMODE_MULTI"); g_mode = 1; dm_hid_opmode_changed();
+}
+
 int main(void) {
     CHECK(setenv("DM_RUMBLE_LOG", "1", 1) == 0, "enable rumble diagnostics");
     t_slots();
@@ -694,6 +721,7 @@ int main(void) {
     t_script();
     t_vibration();
     t_opmode();
+    t_tabletop();
     t_joycons();
     t_jcms();
     t_rumble_log();
