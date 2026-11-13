@@ -5,6 +5,7 @@
 #   host   gm (the packed host in a bundle that allows Game Mode), nogm (the same host in a bundle that does not), gm-<variant> (a host of mkw/test/host.py in a
 #          Game Mode bundle), or the absolute path of a host inside an app bundle (<bundle>/Contents/MacOS/dmhost)
 # The bundles are made under <build>/gm (mkw/test/mkbundle.sh), again when their host is newer. The settings of mkw/env-m2pro-16gb.txt go to every run (mkw/test/bench.sh).
+# FX_ENV=KEY=VAL gives every run one more setting, for a value with a comma in it (DM_NVN_FS_SPLIT's list).
 # After each run the lines of macOS's Game Mode daemon go to stdout. Read a run with fxsum.py, odd.py and lates.py, a whole Grand Prix with soaksum.py. For a
 # long run add MKW_NO_TSV=1 (host_open.py: no per-frame rows, whose writes hold frames of their own) and read its long frames with longlog.py.
 # Example: mkw/test/fx.sh /tmp/fx.out "one|1|gm|DM_FULLSCREEN=1" "four|4|gm|DM_FULLSCREEN=1" "window|1|nogm|"
@@ -36,7 +37,7 @@ for r in "$@"; do
   C=""; [ -f "$ROOT/mkw/test/routes/$R.ctl" ] && C="--env MKW_CTL_SCRIPT=$ROOT/mkw/test/routes/$R.ctl"
   echo "start $label $(date +%H:%M:%S)" >> "$O"
   # shellcheck disable=SC2086
-  mkw/test/bench.sh --route "$R" --runs 1 --no-hud $C --variant "$label:host=$ROOT/mkw/test/host_open.py,MKW_REAL_HOST=$H${extra:+,$extra}" >> "$O" 2>&1
+  mkw/test/bench.sh --route "$R" --runs 1 --no-hud $C ${FX_ENV:+--env "$FX_ENV"} --variant "$label:host=$ROOT/mkw/test/host_open.py,MKW_REAL_HOST=$H${extra:+,$extra}" >> "$O" 2>&1
   /usr/bin/log show --last 30m --predicate 'process == "gamepolicyd"' --style compact 2>/dev/null | grep "gamepolicyd:Common" | grep -E "Found game|Game mode status|Full screen gaming" | tail -6 | sed -E 's/gamepolicyd\[[0-9]+:[0-9a-f]+\] //' | cut -c1-200
   clean; echo "finished $label $(date +%H:%M:%S)" >> "$O"
 done
