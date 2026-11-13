@@ -195,6 +195,7 @@ t_fs_split: t_fs_split.m $(MTL_T_DEP)
 check_t_fs_split: t_fs_split
 	MTL_DEBUG_LAYER=1 ./t_fs_split
 	DM_NVN_ENC_THREAD=1 MTL_DEBUG_LAYER=1 ./t_fs_split
+	DM_NVN_FS_LAYER=0 MTL_DEBUG_LAYER=1 ./t_fs_split
 	MTL_DEBUG_LAYER=1 ./t_fs_split --bases
 t_pool_chunks: t_pool_chunks.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pool_chunks.m $(MTL_T_SRC) $(FW)

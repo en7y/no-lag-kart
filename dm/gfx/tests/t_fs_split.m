@@ -1,7 +1,9 @@
 // Split outputs (profile key fs_split, DM_NVN_FS_SPLIT; nvn_mtl.m fs_split_draw): the draw of a listed fragment shader is made once for each colour attachment it writes, with
 // the channel masks of the others at 0. The test's shader writes a value of its own to each of three attachments and the draws blend additively, so an attachment that one draw
 // reached twice, or not at all, shows in the picture; the draws the host encodes are counted (g_stat_draw).
-// ./t_fs_split: with pipelines compiled whole; ./t_fs_split --bases: with pipelines specialized from bases, where the list is not used and the picture is the same
+// ./t_fs_split: with pipelines compiled whole; ./t_fs_split --bases: with pipelines specialized from bases, where the list is not used and the picture is the same.
+// Cases 7 to 10: face-layered draws (DM_NVN_FS_LAYER, fl_draw): with no blending and no clear in the pass the parts run as one layered pass, one attachment holding the layers and
+// each part's output taken there by the colour map; with DM_NVN_FS_LAYER=0 (or bases) the same draws are split (or whole) as before, with the same picture
 #include "../nvn/nvn_mtl.m"
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
@@ -12,6 +14,7 @@ static int checks, failed;
 #define CHECK(s, c) do { int ok = !!(c); checks++; failed += !ok; printf("%s: %s\n", s, ok ? "PASS" : "FAIL"); } while (0)
 #define LISTED "00000000000000f3"
 #define LISTED_STORES "00000000000000f4"
+#define LISTED_SIX "00000000000000f5"
 typedef struct { uint8_t p[16384]; size_t n; } chain;
 static void emit(chain *c, unsigned op, const void *a, size_t n) {
     size_t sz = (8 + n + 7) & ~7ull; if (c->n + sz > sizeof c->p) abort();
@@ -48,6 +51,13 @@ static void scene(chain *c, const prog_t *pg, const tex_t *t, int n, const tex_t
     for (int k = 0; k < draws; k++) triangle(c);
 }
 static void reset(void) { state_reset(); memset(&R, 0, sizeof R); g_csh_n = 0; }
+// The face-layered cases: n layers of t attached, no clear, no blending, the channel masks and the draws
+static void plain(chain *c, const prog_t *pg, const tex_t *t, int n, uint32_t mask, int draws) {
+    rt_layers(c, t, n, NULL); bind(c, pg);
+    color_st col = {0, NVN_LOGIC_OP_COPY, NVN_ALPHA_FUNC_ALWAYS}; p_bind_state x = {.kind = 1}; memcpy(x.bytes, &col, sizeof col); emit(c, OP_BIND_STATE, &x, sizeof x);
+    channels(c, mask);
+    for (int k = 0; k < draws; k++) triangle(c);
+}
 static void finish(void) {
     uint64_t f = mtl_sub_commit(); CHECK("submission completes", mtl_wait(f, 2000000000ull));
     mtl_drain(); CHECK("no GPU error", !mtl_last_commit_error());
@@ -63,27 +73,44 @@ static int layer_is(const tex_t *t, int layer, int r, int g, int b, int a) {   /
     if (bad) printf("  layer %d holds %d %d %d %d, expected %d %d %d %d\n", layer, p[0], p[1], p[2], p[3], r, g, b, a);
     return !bad;
 }
+// Every layer cleared to 0, in a submission of its own
+static void zero(const tex_t *t, int n) {
+    chain c = {0}; rt_layers(&c, t, n, NULL);
+    for (int i = 0; i < n; i++) { p_clear_color cc = {.index = i, .mask = 0xf}; emit(&c, OP_CLEAR_COLOR, &cc, sizeof cc); }
+    execute(&c);
+}
+// The face pipelines are built in the background, on the first draw that asks for them (which is split meanwhile; one into a texture made without render-target use, which its
+// attachment then gives it, asks for none): such a draw and a wait until every build has finished, twice
+static int fl_settled(void) { os_unfair_lock_lock(&g_fl_pso_lock); int all = 1; for (int i = 0; i < g_fl_pso_n; i++) all &= g_fl_pso[i].done; os_unfair_lock_unlock(&g_fl_pso_lock); return all; }
+static int fl_ready(int n) { os_unfair_lock_lock(&g_fl_pso_lock); int k = 0; for (int i = 0; i < g_fl_pso_n; i++) k += g_fl_pso[i].done && g_fl_pso[i].ps; os_unfair_lock_unlock(&g_fl_pso_lock); return k >= n; }
+static void face_pipelines(const prog_t *pg, const tex_t *t, int n, uint32_t mask) {
+    for (int r = 0; r < 2; r++) { chain c = {0}; plain(&c, pg, t, n, mask, 1); execute(&c); for (int i = 0; i < 1000 && !fl_settled(); i++) usleep(10000); }
+}
 // Programs live for the whole test: the pipeline cache goes by their address
-static prog_t split_pg[3]; static NvProg *split_np[3];
+static prog_t split_pg[4]; static NvProg *split_np[4];
 static void program(int k, id<MTLLibrary> lib, const char *key) {
     static uint64_t serial = 930000; split_pg[k].serial = ++serial;
     NvProg *p = split_np[k] = [NvProg new]; p->sh[0] = [NvShader new]; p->sh[1] = [NvShader new];
-    p->sh[0]->fn = [lib newFunctionWithName:@"v"]; p->sh[0]->stage = 0;
-    p->sh[1]->fn = [lib newFunctionWithName:@"three"]; p->sh[1]->stage = 1; p->sh[1]->rf.color_known = 1; p->sh[1]->rf.color_mask = 7;
+    p->sh[0]->fn = fn4_note([lib newFunctionWithName:@"v"], lib, @"v", nil); p->sh[0]->stage = 0;   // noted, as the host notes every function it makes: the face pipelines are Metal 4 ones
+    p->sh[1]->fn = fn4_note([lib newFunctionWithName:@"three"], lib, @"three", nil); p->sh[1]->stage = 1; p->sh[1]->rf.color_known = 1; p->sh[1]->rf.color_mask = 7;
     snprintf(p->sh[1]->key, sizeof p->sh[1]->key, "%s", key);
     serial_put(split_pg[k].serial, p);
 }
 int main(int argc, char **argv) { @autoreleasepool {
     int bases = argc == 2 && !strcmp(argv[1], "--bases");
-    setenv("DM_NVN_FS_SPLIT", LISTED ":64," LISTED_STORES ":64", 1); setenv("DM_PSO_WHOLE", bases ? "0" : "1", 1);
+    setenv("DM_NVN_FS_SPLIT", LISTED ":64," LISTED_STORES ":64," LISTED_SIX ":64", 1); setenv("DM_PSO_WHOLE", bases ? "0" : "1", 1);
     alarm(60); setbuf(stdout, NULL); mtl_init();
     NSError *error = nil;
     id<MTLLibrary> lib = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\n"
         "vertex float4 v(uint i [[vertex_id]]) { float2 p[3] = {float2(-1, -1), float2(3, -1), float2(-1, 3)}; return float4(p[i], 0, 1); }\n"
         "struct Three { float4 a [[color(0)]]; float4 b [[color(1)]]; float4 c [[color(2)]]; };\n"
-        "fragment Three three() { Three o; o.a = float4(10, 1, 0, 0) / 255.0f; o.b = float4(20, 2, 0, 0) / 255.0f; o.c = float4(30, 3, 0, 0) / 255.0f; return o; }\n" options:nil error:&error];
+        "fragment Three three() { Three o; o.a = float4(10, 1, 0, 0) / 255.0f; o.b = float4(20, 2, 0, 0) / 255.0f; o.c = float4(30, 3, 0, 0) / 255.0f; return o; }\n"
+        "struct Six { float4 a [[color(0)]]; float4 b [[color(1)]]; float4 c [[color(2)]]; float4 d [[color(3)]]; float4 e [[color(4)]]; float4 f [[color(5)]]; };\n"
+        "fragment Six six() { Six o; o.a = float4(10, 1, 0, 0) / 255.0f; o.b = float4(20, 2, 0, 0) / 255.0f; o.c = float4(30, 3, 0, 0) / 255.0f; o.d = float4(40, 4, 0, 0) / 255.0f;"
+        " o.e = float4(50, 5, 0, 0) / 255.0f; o.f = float4(60, 6, 0, 0) / 255.0f; return o; }\n" options:nil error:&error];
     if (!lib) { fprintf(stderr, "%s\n", error.localizedDescription.UTF8String); return 2; }
-    program(0, lib, LISTED); program(1, lib, "00000000000000aa"); program(2, lib, LISTED_STORES);
+    program(0, lib, LISTED); program(1, lib, "00000000000000aa"); program(2, lib, LISTED_STORES); program(3, lib, LISTED_SIX);
+    split_np[3]->sh[1]->fn = fn4_note([lib newFunctionWithName:@"six"], lib, @"six", nil); split_np[3]->sh[1]->rf.color_mask = 0x3f;
     int on = !bases;   // with pipelines specialized from bases the list is not used: every case below is one draw a draw
 
     // 1. two draws of the listed shader into three attachments: three draws each, and every attachment holds twice its own value
@@ -145,5 +172,43 @@ int main(int argc, char **argv) { @autoreleasepool {
       CHECK("a listed shader that writes an image is not split", fs_split_px(split_np[2]->sh[1]) == 0);
       CHECK(on ? "the listed shader that writes none is, up to its size" : "pipelines specialized from bases: no shader is", fs_split_px(split_np[0]->sh[1]) == (on ? 64u : 0u)); }
 
-    printf("split outputs%s: %d checks, %d failed\n", bases ? " (pipelines specialized from bases)" : "", checks, failed); return failed != 0;
+    // 7. face-layered (DM_NVN_FS_LAYER): the listed shader's two draws into three layers of one level, no blending and no clear in the pass: each runs as one pass holding the
+    //    three layers, a draw a layer. Its face pipelines are built in the background on the first draw that asks for them, which is split meanwhile
+    const char *fle = getenv("DM_NVN_FS_LAYER"); int layer = on && !(fle && !strcmp(fle, "0"));
+    {   tex_t t = texture(NVN_TEXTURE_TARGET_2D_ARRAY, NVN_FORMAT_RGBA8, 8, 3);
+        face_pipelines(&split_pg[0], &t, 3, 0xfff);
+        CHECK(layer ? "its three face pipelines are built" : "no face pipeline is asked for", layer ? fl_ready(3) : g_fl_pso_n == 0);
+        chain c = {0}; plain(&c, &split_pg[0], &t, 3, 0xfff, 2);
+        uint64_t fl = g_fl_draws, split = g_fs_split_draws, draws = g_stat_draw, passes = g_stat_pass; execute(&c);
+        CHECK(layer ? "the two draws run face-layered" : on ? "the two draws are split" : "the two draws are whole", g_fl_draws - fl == (layer ? 2u : 0u) && g_fs_split_draws - split == (on && !layer ? 2u : 0u));
+        CHECK(on ? "three draws each" : "one draw each", g_stat_draw - draws == (on ? 6u : 2u));
+        CHECK(layer ? "a pass for each" : "one pass", g_stat_pass - passes == (layer ? 2u : 1u));
+        CHECK("every layer holds its own value", layer_is(&t, 0, 10, 1, 0, 0) && layer_is(&t, 1, 20, 2, 0, 0) && layer_is(&t, 2, 30, 3, 0, 0)); }
+
+    // 8. the game's channel masks hold layer by layer: red only into layer 0, nothing into layer 1 (no draw; the layered attachment keeps what the layer held), all of layer 2
+    {   tex_t t = texture(NVN_TEXTURE_TARGET_2D_ARRAY, NVN_FORMAT_RGBA8, 8, 3);
+        face_pipelines(&split_pg[0], &t, 3, 0xf01); zero(&t, 3);
+        chain c = {0}; plain(&c, &split_pg[0], &t, 3, 0xf01, 1);
+        uint64_t fl = g_fl_draws, draws = g_stat_draw; execute(&c);
+        CHECK(layer ? "a draw with an attachment masked runs face-layered" : "a draw with an attachment masked is not face-layered", g_fl_draws - fl == (layer ? 1u : 0u));
+        CHECK(on ? "two draws" : "one draw", g_stat_draw - draws == (on ? 2u : 1u));
+        CHECK("each layer keeps its channel mask and the masked one its content", layer_is(&t, 0, 10, 0, 0, 0) && layer_is(&t, 1, 0, 0, 0, 0) && layer_is(&t, 2, 30, 3, 0, 0)); }
+
+    // 9. the six faces of a cube map level, as the game's reflection filter draws them
+    {   tex_t t = texture(NVN_TEXTURE_TARGET_CUBEMAP, NVN_FORMAT_RGBA8, 8, 6);
+        face_pipelines(&split_pg[3], &t, 6, 0xffffff);
+        chain c = {0}; plain(&c, &split_pg[3], &t, 6, 0xffffff, 1);
+        uint64_t fl = g_fl_draws, draws = g_stat_draw; execute(&c);
+        CHECK(layer ? "a draw into a cube map level's six faces runs face-layered" : "a draw into a cube map level's six faces is not face-layered", g_fl_draws - fl == (layer ? 1u : 0u));
+        CHECK(on ? "six draws" : "one draw", g_stat_draw - draws == (on ? 6u : 1u));
+        int held = 1; for (int f = 0; f < 6; f++) held &= layer_is(&t, f, 10 * (f + 1), f + 1, 0, 0);
+        CHECK("every face holds its own value", held); }
+
+    // 10. what keeps a draw from being face-layered: blending and a clear in the pass (the scene of case 1)
+    {   tex_t t = texture(NVN_TEXTURE_TARGET_2D_ARRAY, NVN_FORMAT_RGBA8, 8, 3); chain c = {0}; scene(&c, &split_pg[0], &t, 3, NULL, 0xfff, 1);
+        uint64_t fl = g_fl_draws, split = g_fs_split_draws; execute(&c);
+        CHECK(on ? "with blending and a clear the draw is split as before" : "with blending and a clear the draw is whole", g_fl_draws == fl && g_fs_split_draws - split == (on ? 1u : 0u));
+        CHECK("and each attachment holds its value once", layer_is(&t, 0, 10, 1, 0, 0) && layer_is(&t, 1, 20, 2, 0, 0) && layer_is(&t, 2, 30, 3, 0, 0)); }
+
+    printf("split outputs%s%s: %d checks, %d failed\n", bases ? " (pipelines specialized from bases)" : "", on && !layer ? " (DM_NVN_FS_LAYER=0)" : "", checks, failed); return failed != 0;
 } }

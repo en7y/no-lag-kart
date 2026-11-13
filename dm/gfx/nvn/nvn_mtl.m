@@ -4875,6 +4875,10 @@ static struct { int on, lo, hi; } g_sm_plan;   // set by draw() for the pass rp_
 static int g_sm_pass, g_sm_lo, g_sm_hi, g_sm_cur, g_sm_applied;   // the open pass is slice-merged: its attachment holds layers lo..hi; cur: the layer the game's target names now; applied: the offset set on the encoder (-1 none)
 static uint64_t g_sm_npass, g_sm_ncont, g_sm_nwait;   // slice-merged passes, layer switches taken into them, draws that left one because their pipeline was not built yet
 static int g_pso_amp;   // pso_get: the pipeline of a slice-merged pass (sm_amp_get)
+// Face-layered passes (fl_draw): the plan draw sets for the pass rp_begin_ex is about to open (layers lo..hi of the level of the texture colour slot `slot` attaches, in the
+// format fmt), whether the open pass is one, the face being drawn (-1 none: pso_get takes its pipeline, draw_ its colour map and layer) and each slot's layer from lo
+static struct { int on, lo, hi, slot; uint32_t fmt; } g_fl_plan; static int g_fl_pass, g_fl_face = -1; static uint8_t g_fl_off[8];
+static uint64_t g_fl_draws, g_fl_wait;   // draws made face-layered; draws split as before while their face pipelines were built
 // A plan that came to nothing: the pass a draw opened as slice-merged was ended by the next draw into the same layer, one that samples a texture the pass attaches
 // (draw_samples_rt), before any layer switch, so what one pass drew before took two. Mario Kart World draws the third round of its sky cube map's faces with two task / mesh
 // draws each, the second sampling a texture whose storage the cube map overlaps: five passes became nine. The opening draw (its target's texture, level and layer, its shaders)
@@ -5568,7 +5572,7 @@ static void bare_dims(NSUInteger *w, NSUInteger *h);
 static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
     if (g_enc) return g_enc;
     memset(g_zskip_cand_ok, 0, sizeof g_zskip_cand_ok);
-    g_enc_mode = clear_only; g_enc_geo_nocolor = g_geo_omit_colors; g_pass_swrite = g_pass_order = g_pass_late_res = 0; g_sm_pass = 0;
+    g_enc_mode = clear_only; g_enc_geo_nocolor = g_geo_omit_colors; g_pass_swrite = g_pass_order = g_pass_late_res = 0; g_sm_pass = 0; g_fl_pass = 0;
     if (!R.has_rt) { RED_ONCE(3, "no render target set before the draw"); return nil; }
     if (g_imfit_npend) img_fit_upgrade();   // no pass is open here: the upgrade's copy may run (img_fit)
     // The version of the attachment-range candidate is taken before capturing any attachment; if it changes during setup, there is no continuation.
@@ -5614,6 +5618,15 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
         g_sm_pass = 1; g_sm_lo = g_sm_plan.lo; g_sm_hi = g_sm_plan.hi; g_sm_applied = -1; g_sm_npass++;
         static int once; if (!once++) MLOG("slice-merged pass: draws into layers %d-%d of one texture level run as one layered pass (first case pass %llu; DM_NVN_SLICE_MERGE)", g_sm_lo, g_sm_hi, g_stat_pass + 1);
         PD("L %llu slice-merged pass: layers %d-%d, first draw into layer %d", g_stat_pass + 1, g_sm_lo, g_sm_hi, g_sm_cur);
+    }
+    if (g_fl_plan.on && !clear_only && !g_sm_pass && !R.rt.depth && pd.colorAttachments[g_fl_plan.slot].texture) {   // face-layered pass (fl_draw): one attachment holds the faces' layers
+        MTLRenderPassColorAttachmentDescriptor *s = pd.colorAttachments[g_fl_plan.slot]; id<MTLTexture> t = s.texture; NSUInteger lv = s.level;
+        for (int i = 0; i < 8; i++) pd.colorAttachments[i].texture = nil;
+        MTLRenderPassColorAttachmentDescriptor *c = pd.colorAttachments[0];
+        c.texture = t; c.level = lv; c.slice = (NSUInteger)g_fl_plan.lo; c.depthPlane = 0; c.loadAction = MTLLoadActionLoad; c.storeAction = MTLStoreActionStore;   // what the faces leave keeps
+        pd.renderTargetArrayLength = (NSUInteger)(g_fl_plan.hi - g_fl_plan.lo + 1); pd.supportColorAttachmentMapping = YES;
+        g_fl_pass = 1;
+        PD("L %llu face-layered pass: layers %d-%d of one attachment", g_stat_pass + 1, g_fl_plan.lo, g_fl_plan.hi);
     }
     // clear_only: 0 attach all 1 only for clears 2 neither depth nor stencil attached 3 stencil only 4 depth only (3 / 4: the pass_ds_need lookahead proves the whole pass uses only that one)
     if (R.rt.depth && clear_only != 2 && !(clear_only == 1 && !R.clear_d && !R.clear_s)) {
@@ -8136,6 +8149,9 @@ static const char g_tf_mark, g_amp_mark, g_discard_mark;
 static char g_geo_mark;
 #define GEO_MARK ((const void *)&g_geo_mark)
 #define AMP_MARK ((const void *)&g_amp_mark)   // pso_key.fsfn of a slice-merged pass's pipeline (vertex amplification, sm_amp_get)
+static const char g_fl_mark[8];
+#define FL_MARK(i) ((const void *)&g_fl_mark[(i) & 7])   // pso_key.fsfn of a face draw's pipeline (fl_pso_get): the logical attachment it writes
+static inline int fl_mark_face(const void *p) { uintptr_t a = (uintptr_t)p, b = (uintptr_t)g_fl_mark; return a >= b && a < b + sizeof g_fl_mark ? (int)(a - b) : -1; }
 #define TF_MARK ((const void *)&g_tf_mark)   // pso_key.fsfn of a transform feedback capture pipeline (tf_pso)
 #define DISCARD_MARK ((const void *)&g_discard_mark)   // vertex work still runs, without rasterization or a fragment stage
 static int mtl_fmt_uint(MTLPixelFormat f) {
@@ -8440,7 +8456,7 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
     d.depthAttachmentPixelFormat = (MTLPixelFormat)k->dfmt; d.stencilAttachmentPixelFormat = (MTLPixelFormat)k->sfmt;
     if (!vs) return d;   // a native mesh pipeline reuses only the fragment and attachment state
     if (vs->layer_out && k->fsfn != GEO_MARK) d.inputPrimitiveTopology = vs->geo_output == 1 ? MTLPrimitiveTopologyClassPoint : vs->geo_output == 6 ? MTLPrimitiveTopologyClassLine : MTLPrimitiveTopologyClassTriangle;
-    if (k->fsfn == AMP_MARK) d.maxVertexAmplificationCount = 2;   // a slice-merged pass's pipeline: the view mapping's layer offset applies (see g_sm_plan)
+    if (k->fsfn == AMP_MARK || fl_mark_face(k->fsfn) >= 0) d.maxVertexAmplificationCount = 2;   // a slice-merged pass's pipeline, or a face draw's (fl_pso_get): the view mapping's layer offset applies (see g_sm_plan)
     if (k->fsfn == TF_MARK || k->fsfn == GEO_MARK) { d.vertexFunction = k->fsfn == GEO_MARK ? vs->geo_fn : vs->tf_fn; }   // transform feedback capture (tf_draw)
     if (k->fsfn == DISCARD_MARK) { d.vertexFunction = vs->discard_fn; }
     MTLVertexDescriptor *vd = [MTLVertexDescriptor vertexDescriptor];
@@ -9833,11 +9849,43 @@ static __unsafe_unretained id<MTLRenderPipelineState> sm_amp_get(const pso_key *
         os_unfair_lock_lock(&g_sm_amp_lock); g_sm_amp[i].ps = ps; g_sm_amp[i].done = 1; os_unfair_lock_unlock(&g_sm_amp_lock); });
     return nil;
 }
+// A face draw's pipeline (fl_draw): the draw's own, whole, with its one logical attachment, the colour map left to the encoder (Inherited) and maxVertexAmplificationCount 2
+// (pso_desc), so the view mapping's layer offset applies. Built in the background on first use, from the pipeline archive when it has it (its key holds the mapping state) and
+// into it otherwise; until every face's is there the draw is split as before, so no frame waits for the compiler. A failed build is not tried again
+enum { FL_PSO_MAX = 64 };
+static struct { pso_key k; id<MTLRenderPipelineState> ps; int done; } g_fl_pso[FL_PSO_MAX]; static int g_fl_pso_n; static os_unfair_lock g_fl_pso_lock = OS_UNFAIR_LOCK_INIT;
+static id<MTLRenderPipelineState> fl_pso_get(const pso_key *k, NvShader *vs, NvShader *fs) {
+    __unsafe_unretained id<MTLRenderPipelineState> c = hm_get_id(&g_pso, k); if (c) return c;
+    os_unfair_lock_lock(&g_fl_pso_lock); int i = 0; for (; i < g_fl_pso_n; i++) if (!memcmp(&g_fl_pso[i].k, k, sizeof *k)) break;
+    if (i < g_fl_pso_n) { id ps = g_fl_pso[i].done ? g_fl_pso[i].ps : nil; os_unfair_lock_unlock(&g_fl_pso_lock); if (ps) { hm_put_id(&g_pso, k, ps); return hm_get_id(&g_pso, k); } return nil; }
+    if (g_fl_pso_n >= FL_PSO_MAX || !g_comp4) { os_unfair_lock_unlock(&g_fl_pso_lock); return nil; }
+    g_fl_pso[i].k = *k; g_fl_pso[i].ps = nil; g_fl_pso[i].done = 0; g_fl_pso_n++; os_unfair_lock_unlock(&g_fl_pso_lock);
+    MTLRenderPipelineDescriptor *d = pso_desc(k, vs, fs, nil, 0); MTL4RenderPipelineDescriptor *m = pso_desc4(d, 0, !k->border);
+    if (m) m.colorAttachmentMappingState = MTL4LogicalToPhysicalColorAttachmentMappingStateInherited;
+    int vd = 0; for (int a = 0; a < 31 && !vd; a++) vd = d.vertexDescriptor.attributes[a].format != MTLVertexFormatInvalid;   // a vertex layout (as pso_whole_take)
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ NSError *e = nil; int from_run = 0;
+        id<MTLRenderPipelineState> ps = m ? arch_lookup(m, vd, &from_run) : nil;
+        if (!ps && m) ps = arch_capture(m, &e, vd, NULL);
+        if (!ps) MLOG("[RED] face-layered draws: no pipeline for vertex %s fragment %s: %s (those draws stay split)", vs->key, fs ? fs->key : "-", m ? e.localizedDescription.UTF8String : "no Metal 4 descriptor of its functions (fn4_note)");
+        os_unfair_lock_lock(&g_fl_pso_lock); g_fl_pso[i].ps = ps; g_fl_pso[i].done = 1; os_unfair_lock_unlock(&g_fl_pso_lock); });
+    return nil;
+}
+static MTLLogicalToPhysicalColorAttachmentMap *fl_map(int face) {   // logical attachment `face` to the pass's one (physical 0); each made once, read only from then on
+    static MTLLogicalToPhysicalColorAttachmentMap *maps[8];
+    if (!maps[face & 7]) { MTLLogicalToPhysicalColorAttachmentMap *m = [MTLLogicalToPhysicalColorAttachmentMap new]; [m setPhysicalIndex:0 forLogicalIndex:(NSUInteger)(face & 7)]; maps[face & 7] = m; }
+    return maps[face & 7];
+}
 static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRenderPassDescriptor *unused) {
     (void)unused;
     g_pso_pull = 0;   // set again only where a pulling pipeline is returned: a stale 1 made the next draw, whose pipeline came from the cache, bind the layout block instead of its streams
     __unsafe_unretained NvShader *vs = pr->sh[0], *fs = pr->sh[1];
     if (!vs) { RED_ONCE(13, "program has no vertex shader (or it is not mapped)"); return nil; }
+    if (g_fl_face >= 0) {   // a face draw (fl_draw): its own logical attachment alone, no depth, one sample, whatever pass is open; none in a pass that is not face-layered
+        if (g_enc && !g_fl_pass) return nil;
+        uint32_t fc[8] = {0}; fc[g_fl_face & 7] = g_fl_plan.fmt;
+        pso_key k; pso_key_fill(&k, vs, fs, fc, 0, 0, 1, 0); k.fsfn = FL_MARK(g_fl_face);
+        return fl_pso_get(&k, vs, fs);
+    }
     pso_key k; pso_key_fill(&k, vs, fs, g_pass.cfmt, g_pass.dfmt, g_pass.sfmt, g_pass.samples, g_pso_lmap != NULL);
     if (S.rast_discard) {
         k.fsfn = DISCARD_MARK;
@@ -14167,6 +14215,7 @@ void mtl_cshoist_stats(uint64_t *moved, uint64_t *depth, uint64_t *stops) { *mov
 static uint32_t draw_color_writes(NvProg *pr) {
     NvShader *fs = pr ? pr->sh[1] : nil;
     if (!fs || S.rast_discard) return 0;
+    if (g_fl_face >= 0) return S.chmask.mask >> (4 * g_fl_face) & 0xf ? 1u : 0u;   // a face draw writes the pass's one attachment (fl_draw)
     uint32_t outputs = g_pso_fsfn || ms_fs_override(fs) || !fs->rf.color_known ? UINT32_MAX : fs->rf.color_mask;
     uint32_t mask = 0;
     for (int i = 0; i < 8; i++) {
@@ -14282,6 +14331,55 @@ static uint32_t fs_split_px(NvShader *fs) {
     }
     return fs->fs_split - 1;
 }
+// ---------- Face-layered draws (DM_NVN_FS_LAYER, on by default with fs_split; 0 off; ab: alternated with the DM_AB phases) ----------
+// A listed shader's draw into layers of one level of a texture, one attachment a layer (Mario Kart World's reflection filter: the six faces of a cube map level, each a 2D view),
+// runs as one layered pass: one attachment holding those layers, and the parts above, a draw a layer, each with the game's own fragment function and only that layer's output, which
+// Metal 4's colour attachment map takes to the one attachment (the pipeline leaves the map to the encoder) and a vertex amplification view mapping into its layer. The picture is
+// the same bit for bit: the same function computes the same output, only where it lands is mapped. What changes is what the GPU makes of it: the layers' fragments run as one
+// pass's, each draw keeping its share of the shader. The game's two filter shaders with their own pipelines (M2 Pro, 50 levels a command buffer, best of 5; the texels the same bit
+// for bit at 64x64, 8x8 and 1x1): 765844f5609bb11b (a cube array's faces) took 157.6 / 91.9 / 64.6 / 51.0 us a level at 64x64 / 32x32 / 16x16 / 8x8 in parts and takes 60.4 /
+// 36.3 / 35.3 / 34.8 this way; 4744589bb8f9f7dd (a cube's), drawn whole above 8x8 since in parts it took 405.5 / 217.1 / 75.6 there, took 166.6 / 93.3 / 40.7 and takes 145.6 /
+// 56.1 / 37.4; at 4x4 and below both stay at a pass's own cost, about 35. A four-player frame filters nine to twelve such cube maps, six levels each: 4.6 to 6.3 ms of its GPU time.
+// A single draw for every layer would need a fragment function that writes the output its layer names, a shader of its own; this keeps the game's.
+// Only a plain draw: no blending, logic operation, alpha test or alpha to coverage (all of which the parts would have to carry over by attachment), no clear waiting for the pass
+// (a layered attachment's load action is every layer's), no depth, no pass open yet (the pass is opened for these draws and ended after them), every attachment the same texture
+// and level through a view of its format, a layer each (array, cube or cube array texture), none the CPU reads back (rt_mirror_add), and a vertex shader that does not write the layer
+enum { FL_PX = 4096 };   // up to 64x64, where it was measured; larger draws are split, or not, as the list says
+static int fl_on(void) { static int m = -1; if (m < 0) { m = sw_mode("DM_NVN_FS_LAYER", 1); if (!m) MLOG("DM_NVN_FS_LAYER=0: a listed shader's draws into layers of one level stay in parts, an attachment a layer"); } return sw_on(m); }
+static int fl_draw(NvProg *pr, const p_draw *dw, const p_draw_idx *di, uint32_t m) {
+    if (g_enc || !fl_on() || !pr->sh[0] || pr->sh[0]->layer_out || S.color.blend_en || lop_on() || atest_on() || S.ms.a2c || R.clear_d || R.clear_s) return 0;
+    int lo = 64, hi = -1, slot = -1, n = 0; uint64_t seen = 0; view_t v0; memset(&v0, 0, sizeof v0);
+    for (int i = 0; i < R.rt.n && i < 8; i++) {
+        if (R.clear_c[i]) return 0;
+        if (!R.rt.color[i] || !(m >> (4 * i) & 0xf)) continue;
+        view_t v = R.rt.cview[i]; int l = v.min_layer;
+        if (!R.rt.has_cview[i] || !v.set_layers || v.set_format || (v.set_target && v.target != NVN_TEXTURE_TARGET_2D) || l >= 64 || (seen >> l & 1)) return 0;
+        v.min_layer = 0;
+        if (slot < 0) { slot = i; v0 = v; }
+        else if (R.rt.color[i]->serial != R.rt.color[slot]->serial || memcmp(&v, &v0, sizeof v)) return 0;
+        seen |= 1ull << l; g_fl_off[i] = (uint8_t)l; if (l < lo) lo = l; if (l > hi) hi = l; n++;
+    }
+    if (n < 2 || gsb_target(R.rt.color[slot])) return 0;
+    id<MTLTexture> t = tex_mtl(R.rt.color[slot]);
+    if (!t || t.sampleCount != 1 || mtl_fmt_block(t.pixelFormat) || mtl_fmt_depth(t.pixelFormat) || !(t.usage & MTLTextureUsageRenderTarget)
+        || (t.textureType != MTLTextureType2DArray && t.textureType != MTLTextureTypeCube && t.textureType != MTLTextureTypeCubeArray)
+        || (NSUInteger)hi >= t.arrayLength * (t.textureType == MTLTextureType2DArray ? 1 : 6)) return 0;
+    for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i] && (m >> (4 * i) & 0xf)) g_fl_off[i] = (uint8_t)(g_fl_off[i] - lo);
+    g_fl_plan.fmt = (uint32_t)t.pixelFormat;
+    int ready = 1;   // every face's pipeline (asking queues its build: fl_pso_get)
+    for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i] && (m >> (4 * i) & 0xf)) { g_fl_face = i; S.chmask.mask = m & (0xfu << (4 * i)); if (!pso_get(pr, nil)) ready = 0; }
+    g_fl_face = -1; S.chmask.mask = m; g_pso_dirty = 1;
+    if (!ready) { g_fl_wait++; return 0; }
+    g_fl_plan.on = 1; g_fl_plan.lo = lo; g_fl_plan.hi = hi; g_fl_plan.slot = slot;
+    uint32_t w = (uint32_t)MAX(t.width >> (R.rt.has_cview[slot] && R.rt.cview[slot].set_levels ? R.rt.cview[slot].base_level : 0), 1u);
+    if (!g_fl_draws) MLOG("face-layered draws: first case pass %llu, fragment shader %s: %d layers (%d-%d) of a %ux%u level, one attachment and a draw a layer (DM_NVN_FS_LAYER)", g_stat_pass + 1, pr->sh[1]->key, n, lo, hi, w, w);
+    if (++g_fl_draws == 1000 || g_fl_draws == 100000) MLOG("face-layered draws: %llu so far; %llu split while their pipelines were built", (unsigned long long)g_fl_draws, (unsigned long long)g_fl_wait);
+    PD("p %llu face-layered: %d draws into layers %d-%d, fs=%s", g_stat_pass + 1, n, lo, hi, pr->sh[1]->key);
+    for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i] && (m >> (4 * i) & 0xf)) { g_fl_face = i; S.chmask.mask = m & (0xfu << (4 * i)); g_pso_dirty = 1; draw_(dw, di); }
+    g_fl_face = -1; S.chmask.mask = m; g_pso_dirty = 1; g_fl_plan.on = 0;
+    if (g_enc && g_fl_pass) rp_end();   // the pass holds these draws alone: what comes next opens the game's attachments again
+    return 1;
+}
 // Makes the draw in parts if it is one to split and returns 1; 0: the caller makes it
 static int fs_split_draw(const p_draw *dw, const p_draw_idx *di) {
     if (!fs_split_n() || R.rt.depth || !R.has_rt || !S.prog || g_geo_program || g_defer_replaying || g_defer.active || g_fz.active || S.tf_on || S.rast_discard || g_vis_on) return 0;
@@ -14294,6 +14392,7 @@ static int fs_split_draw(const p_draw *dw, const p_draw_idx *di) {
     if (n < 2) return 0;
     uint32_t lv = R.rt.has_cview[first] && R.rt.cview[first].set_levels ? (uint32_t)R.rt.cview[first].base_level : 0;
     uint32_t w = MAX(R.rt.color[first]->d.width >> lv, 1u), h = MAX(R.rt.color[first]->d.height >> lv, 1u);
+    if ((uint64_t)w * h <= FL_PX && fl_draw(pr, dw, di, m)) return 1;   // one layered pass (fl_draw)
     if ((uint64_t)w * h > px) return 0;
     if (!g_fs_split_draws++) MLOG("split outputs: first case pass %llu, fragment shader %s: %d draws, one for each attachment of %ux%u", g_stat_pass + !g_enc, pr->sh[1]->key, n, w, h);
     PD("p %llu split outputs: %d draws, one for each attachment of %ux%u, fs=%s", g_stat_pass + !g_enc, n, w, h, pr->sh[1]->key);
@@ -14458,6 +14557,9 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
     if (ps != g_enc_pso) { enc_r_pso(en, ps); g_enc_pso = ps; }
     if (g_sm_pass && g_sm_applied != g_sm_cur) {   // the layer this draw goes to (see g_sm_plan)
         MTLVertexAmplificationViewMapping vm = {0, (uint32_t)(g_sm_cur - g_sm_lo)}; [(id<MTL4RenderCommandEncoder>)en setVertexAmplificationCount:1 viewMappings:&vm]; g_sm_applied = g_sm_cur; }
+    if (g_fl_pass && g_fl_face >= 0) {   // a face draw (fl_draw): its output to the pass's one attachment through the colour map, into its layer through the view mapping
+        [(id<MTL4RenderCommandEncoder>)en setColorAttachmentMap:fl_map(g_fl_face)];
+        MTLVertexAmplificationViewMapping vm = {0, g_fl_off[g_fl_face & 7]}; [(id<MTL4RenderCommandEncoder>)en setVertexAmplificationCount:1 viewMappings:&vm]; }
     static id<MTLDepthStencilState> cur_ds; static uint64_t cur_ds_pass;
     // Diagnostic DM_NVN_DEPTHOVR=fragment shader key prefix,...: those draws compare depth with ALWAYS, which tells "the depth test rejects every fragment" from "nothing rasterizes" (with DM_NVN_HILITE); unset = unchanged
     static char dko[8][24]; static int ndko = -1;
