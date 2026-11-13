@@ -506,6 +506,8 @@ class App(unittest.TestCase):
         self.assertEqual((p['CFBundleExecutable'], p['CFBundleName'], p['CFBundleIdentifier'], p['CFBundleShortVersionString']), ('nxnative', 'Game: Test', 'org.nxnative.01008cf01baac000', '1.0.1'))
         self.assertEqual((p['DMTitleID'], p['DMLanguage'], p['DMRomfsMarker'], p['CFBundleIconFile']), (TID, 'fr', 'region_common/audio/edward.bfsar', 'AppIcon'))
         self.assertIs(p['LSSupportsGameMode'], False)   # macOS's Game Mode holds the GPU at its lowest clock (frame-rate.md)
+        a = types.SimpleNamespace(**vars(self.args)); a.game_mode = True   # --game-mode (a profile's mac_game_mode on)
+        self.assertIs(pack_app.info_plist(a, '26.0', None)['LSSupportsGameMode'], True)
         self.assertEqual(p['DMSettings'], [])   # launcher.json's settings, as the saved choices they accept: none here
         self.assertRegex(p['DMCommit'], r'^[0-9a-f]{12}(\+dirty)?$')   # the packing checkout (scripts/bug_report.py, the host's start line)
         self.assertEqual(p['DMChain'], '0123456789ab')   # the chain of the libraries packed (msl/b-<chain>)
@@ -741,7 +743,7 @@ class Script(unittest.TestCase):
             (out / 'Contents/MacOS').mkdir(parents=True); (out / 'Contents/MacOS/dmhost').write_bytes(b'x')
             on_line('step: launcher and host (clones of the game files)')
             on_line(f'app: {out}')
-        g = types.SimpleNamespace(table=lambda n: tmp / 'profile' / n, get={'app_category': 'public.app-category.games', 'romfs_marker': 'a/b'}.get)
+        g = types.SimpleNamespace(table=lambda n: tmp / 'profile' / n, get={'app_category': 'public.app-category.games', 'romfs_marker': 'a/b', **kw.get('profile', {})}.get)
         g.id = '01008CF01BAAC000'
         self.prog = mock.Mock()
         with mock.patch.object(nsp, 'run', fake_run), mock.patch.object(nsp, 'PROG', self.prog), mock.patch.object(nsp, 'chain_of', lambda repo: '0123456789ab'), \
@@ -750,7 +752,13 @@ class Script(unittest.TestCase):
                         kw.get('aoc'), gfx, 'en-US', g, 'Game', '1.0.0', 'org.nxnative.01008cf01baac000', None, kw.get('sign', ''), {}, tmp, gpus=kw.get('gpus', ''))
         self.pso_cmd = next((c for c in ran if c[1].endswith('pso_offline.py')), None)   # before the packer
         self.settings_cmd = next(c for c in ran if c[1].endswith('dm/games/settings.py'))
-        c = ran[-1]; return {c[i]: c[i + 1] for i in range(3, len(c) - 1) if c[i].startswith('--')}, tmp
+        c = ran[-1]; self.pack_argv = c; return {c[i]: c[i + 1] for i in range(3, len(c) - 1) if c[i].startswith('--')}, tmp
+
+    def test_game_mode_key(self):   # the profile's mac_game_mode: on packs LSSupportsGameMode true (--game-mode); off or no key does not; another value stops the build
+        self.pack_cmd('nvn'); self.assertNotIn('--game-mode', self.pack_argv)
+        self.pack_cmd('nvn', profile={'mac_game_mode': 'off'}); self.assertNotIn('--game-mode', self.pack_argv)
+        self.pack_cmd('nvn', profile={'mac_game_mode': 'on'}); self.assertIn('--game-mode', self.pack_argv)
+        with self.assertRaisesRegex(nsp.BuildError, 'mac_game_mode must be on or off'): self.pack_cmd('nvn', profile={'mac_game_mode': 'yes'})
 
     def test_pack_command(self):
         o, tmp = self.pack_cmd('nvn')

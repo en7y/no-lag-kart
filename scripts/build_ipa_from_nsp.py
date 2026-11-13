@@ -2758,6 +2758,9 @@ def mac_app(py, repo, out, app, work, game, patched, host, font, msl, aoc, gfx, 
         if v: cmd += [opt, v]
     for n, r in (programs or {}).items(): cmd += ['--program', f'{n}\t{r["patched"]}\t{r["romfs"]}\t{r["msl"]}\t{r["tables"]}\t{r["html"]}']
     if (game / 'html').is_dir(): cmd += ['--html', game / 'html']
+    gm = g.get('mac_game_mode', 'off')   # the profile's mac_game_mode: on = the app declares LSSupportsGameMode true (pack_app.py --game-mode); off, the default, keeps macOS's Game Mode away
+    if gm not in ('on', 'off'): raise BuildError(f'{g.id}: mac_game_mode must be on or off: {gm}')
+    if gm == 'on': cmd += ['--game-mode']
     unchanged = False
     def line(ln):
         nonlocal unchanged
