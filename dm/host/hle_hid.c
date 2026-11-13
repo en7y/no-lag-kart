@@ -716,10 +716,18 @@ int dm_players_reported(void) {   // a pair of Joy-Cons split into two npads is 
 // that opens no applet for one player leaves the count of its last split screen until it is started again
 static _Atomic int g_applet_found;
 int dm_hid_applet_players(void) { return atomic_load(&g_applet_found); }
+// DM_OPMODE_MULTI_FROM=<n> (default 2): the number of players from which DM_OPMODE_MULTI applies. An applet that finds two or more players but fewer than n puts the console
+// back in the mode it had before the first change here (g_multi_back), so a split screen of that size plays in the starting mode again after a larger one. Mario Kart World
+// on the M2 Pro after the streaming submit (nvn_queue.inc): console mode holds two players' 60 fps; with four, a whole Grand Prix in console mode had 263 frames a refresh too
+// long, its GPU at 31.6 to 34.9 ms of the 33.3 on the heaviest stretches with the dynamic resolution at its floor, against 27 to 42 in handheld mode
+static int g_multi_back = -1;   // the mode before multi_opmode first changed it (-1: no change yet)
 static void multi_opmode(int players) {
     const char *e = getenv("DM_OPMODE_MULTI"); if (!e || !*e) return;
-    int to = atoi(e) != 0; if (dm_opmode() == to) return;
-    LOG("hid controller applet: %d players found, the console goes %s (DM_OPMODE_MULTI=%d)", players, to ? "into its dock" : "on its stand: handheld mode, the controllers as they are", to);
+    const char *f = getenv("DM_OPMODE_MULTI_FROM"); int from = f && *f ? atoi(f) : 2; if (from < 2) from = 2;
+    int multi = atoi(e) != 0, to = players >= from ? multi : g_multi_back;
+    if (to < 0 || dm_opmode() == to) return;
+    if (g_multi_back < 0) g_multi_back = dm_opmode();
+    LOG("hid controller applet: %d players found, the console goes %s (DM_OPMODE_MULTI=%d from %d players)", players, to ? "into its dock" : "on its stand: handheld mode, the controllers as they are", multi, from);
     if (!to) atomic_store(&g_tabletop, 1);
     dm_set_opmode(to);
 }

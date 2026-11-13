@@ -716,6 +716,25 @@ static void t_tabletop(void) {
     unsetenv("DM_OPMODE_MULTI"); g_mode = 1; dm_hid_opmode_changed();
 }
 
+// DM_OPMODE_MULTI_FROM: the mode changes only from that many players on; a smaller split screen after a larger one goes back to the mode before the first change (console
+// mode here: t_tabletop's first change was from it)
+static void t_multi_from(void) {
+    int32_t info[2]; int8_t arg[8] = {2, 2};
+    g_mode = 1; dm_hid_opmode_changed(); g_prompt_answer = -1; g_prompt_join = 0;
+    ids((uint32_t[]){0, 1, 2, 3, NPAD_HANDHELD}, 5); dm_pad_players(0xf); h_hid_SetStyles(0xffffffffu);
+    setenv("DM_OPMODE_MULTI", "0", 1); setenv("DM_OPMODE_MULTI_FROM", "3", 1);
+    CHECK(h_hid_ShowCtrl(info, arg) == RES_OK && info[0] == 2 && g_mode == 1, "DM_OPMODE_MULTI_FROM=3: two players keep console mode");
+    arg[0] = arg[1] = 3; CHECK(h_hid_ShowCtrl(info, arg) == RES_OK && info[0] == 3 && g_mode == 0 && info[1] == NPAD_NO1, "three players: handheld mode, on its stand");
+    arg[0] = arg[1] = 4; CHECK(h_hid_ShowCtrl(info, arg) == RES_OK && g_mode == 0, "four players: handheld mode stays");
+    arg[0] = arg[1] = 2; CHECK(h_hid_ShowCtrl(info, arg) == RES_OK && g_mode == 1 && dm_player_npad(0) == NPAD_NO1, "two players after four: console mode again, player 1 on No1");
+    arg[0] = arg[1] = 1; CHECK(h_hid_ShowCtrl(info, arg) == RES_OK && g_mode == 1, "one player: nothing changes");
+    unsetenv("DM_OPMODE_MULTI_FROM");
+    arg[0] = arg[1] = 2; CHECK(h_hid_ShowCtrl(info, arg) == RES_OK && g_mode == 0, "unset: from two players, as before");
+    setenv("DM_OPMODE_MULTI_FROM", "1", 1); dm_set_opmode(1);
+    CHECK(h_hid_ShowCtrl(info, arg) == RES_OK && g_mode == 0, "a value under two counts as two");
+    unsetenv("DM_OPMODE_MULTI"); unsetenv("DM_OPMODE_MULTI_FROM"); g_mode = 1; dm_hid_opmode_changed(); dm_pad_players(0);
+}
+
 int main(void) {
     CHECK(setenv("DM_RUMBLE_LOG", "1", 1) == 0, "enable rumble diagnostics");
     t_slots();
@@ -724,6 +743,7 @@ int main(void) {
     t_vibration();
     t_opmode();
     t_tabletop();
+    t_multi_from();
     t_joycons();
     t_jcms();
     t_rumble_log();
