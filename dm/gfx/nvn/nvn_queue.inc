@@ -16,8 +16,11 @@ typedef struct nq_node {
     nq_signal *signals; unsigned signal_count;   // NQ_COMMANDS: every event signal it records, in order (nq_event_issued at its commit)
     tex_t texture; double period; int crop[4];
 } nq_node;
-typedef struct nq_owned { struct nq_owned *next; unsigned kind; uint64_t data[]; } nq_owned;
-typedef struct nq_job { struct nq_job *next; nq_node *first, *last; nq_receipt *receipt; nq_owned *owned; nvn_hmap objects; uint64_t frame; } nq_job;
+typedef struct nq_owned { struct nq_owned *next, *pnext; const void *psrc; unsigned kind; uint64_t data[]; } nq_owned;   // pnext, psrc: a program whose snapshot waits for the submission lock (nq_resolve)
+typedef struct nq_job { struct nq_job *next; nq_node *first, *last; nq_receipt *receipt; nq_owned *owned; nvn_hmap objects; uint64_t frame;
+    nq_node *sfirst, *slast; nq_owned *pend; void *owner; int open, queued, waits, held, late; unsigned tick; } nq_job;   // sfirst..slast: the nodes its submit call is still copying (the worker sees first..last);
+    // pend: programs to snapshot; owner: its queue_t; open: more nodes will come; queued: it is in its queue; held: the submit call holds the submission lock throughout (DM_NVN_SUBMIT_STREAM=0);
+    // late: finished nodes are still with the submit call, the lock was busy at their cut (nq_late)
 static void nq_job_free(nq_job *j) {
     for(nq_owned *o=j->owned,*next;o;o=next) { next=o->next; if(o->kind==CAP_K_PROG) mtl_prog_unpin((prog_t *)o->data); else if(o->kind==CAP_K_TEX) mtl_tex_unpin(((tex_t *)o->data)->serial); free(o); }
     free(j->objects.keys); free(j->objects.vals); free(j);
@@ -29,8 +32,10 @@ static int nq_snapshot_object(void *ctx,int kind,uint64_t *field,uint8_t *payloa
     if(!o) {
         size_t bytes=kind==CAP_K_PROG?sizeof(prog_t):sizeof(tex_t); o=calloc(1,sizeof *o+bytes); if(!o) die("queue descriptor allocation failed");
         o->kind=kind; o->next=j->owned; j->owned=o;
-        if(kind==CAP_K_PROG) mtl_prog_snapshot((prog_t *)o->data,(const prog_t *)(uintptr_t)*field);
-        else { memcpy(o->data,(const void *)(uintptr_t)*field,bytes); mtl_tex_pin(((tex_t *)o->data)->serial); }
+        if(kind==CAP_K_PROG) {   // prog_get and the program pins belong to the submission lock: at once when the call holds it, else at the next cut (nq_resolve)
+            if(j->held) mtl_prog_snapshot((prog_t *)o->data,(const prog_t *)(uintptr_t)*field);
+            else { o->psrc=(const void *)(uintptr_t)*field; o->pnext=j->pend; j->pend=o; }
+        } else { memcpy(o->data,(const void *)(uintptr_t)*field,bytes); mtl_tex_pin(((tex_t *)o->data)->serial); }
         nvn_hm_put(&j->objects,key,o);
     }
     *field=(uintptr_t)o->data;return 1;
@@ -257,6 +262,7 @@ static void *nq_worker(void *unused) {
             int mapped_event_wait=0;
             for(q=nq_queues;q;q=q->next) {
                 j=q->first; if(!j) continue; n=j->first;
+                if(!n && j->open) continue;   // its submit call is still copying: the next nodes come with a cut (nq_cut)
                 if(!n) { nq_publish(j->receipt,q->physical); q->first=j->next; if(!q->first) q->last=NULL; nq_put(j->receipt);
                     pthread_mutex_unlock(&nq_mu); pthread_mutex_lock(&g_sub_mu); void *pool=objc_autoreleasePoolPush(); nq_job_free(j); objc_autoreleasePoolPop(pool); pthread_mutex_unlock(&g_sub_mu); pthread_mutex_lock(&nq_mu); goto scan_again; }
                 if(n->kind==NQ_EVENT && n->event) {
@@ -317,7 +323,39 @@ static void nq_signal_add(nq_node *n,nq_signal s) {
     if(!(n->signal_count&(n->signal_count-1))) { n->signals=realloc(n->signals,(n->signal_count?2*n->signal_count:1)*sizeof *n->signals); if(!n->signals) die("queue signals allocation failed"); } // NOLINT(bugprone-suspicious-realloc-usage): allocation failure aborts
     n->signals[n->signal_count++]=s;
 }
-static void nq_end(nq_job *j) { if(j->last && j->last->kind==NQ_COMMANDS && !j->last->closed) { op_hdr end={OP_END,8}; nq_bytes(j->last,&end,8); j->last->closed=1; } }
+static nq_node *nq_stage(nq_job *j,unsigned kind) { nq_node *n=calloc(1,sizeof *n); if(!n) die("queue continuation allocation failed"); n->kind=kind; if(j->slast) j->slast->next=n; else j->sfirst=n; j->slast=n; return n; }
+static void nq_end(nq_job *j) { nq_node *n=j->slast; if(n && n->kind==NQ_COMMANDS && !n->closed) { op_hdr end={OP_END,8}; nq_bytes(n,&end,8); n->closed=1; } }
+static void nq_enqueue(nq_queue *q,nq_job *j);
+// A submit call copies a whole frame's recordings before it returns (Mario Kart World: 1.2 ms with two players, 2.0 ms with four, submitted the moment the previous frame's GPU work
+// ends), and it used to hold the submission lock for all of it and to queue the job only at the end: the worker, and with it the GPU, waited for the whole copy before the frame's
+// first command. Now the copy holds the lock only for the programs it snapshots (prog_get and the program pins belong to that lock; a texture's pin has its own, g_smu), and each cut
+// (a wait or a fence) hands the nodes copied so far to the worker. DM_NVN_SUBMIT_STREAM=0: as before
+static int nq_stream_on(void) { static int v=-1; if(v<0) { const char *e=getenv("DM_NVN_SUBMIT_STREAM"); v=!(e && !strcmp(e,"0")); } return v; }
+static int nq_resolve(nq_job *j,int block) {   // the programs of the nodes copied so far, snapshotted; block 0: only if the lock is free → whether they are
+    if(!j->pend) return 1;
+    if(block) dm_host_mutex_lock(&g_sub_mu); else if(pthread_mutex_trylock(&g_sub_mu)) return 0;
+    void *pool=objc_autoreleasePoolPush(); dm_host_work++; mtl_prepare(); dm_host_work--;
+    for(nq_owned *o=j->pend;o;o=o->pnext) mtl_prog_snapshot((prog_t *)o->data,(const prog_t *)o->psrc);
+    j->pend=NULL; objc_autoreleasePoolPop(pool); pthread_mutex_unlock(&g_sub_mu); return 1;
+}
+static void nq_hand_over(nq_job *j,int final) {   // the copied nodes join the job's list, in order, and the job its queue; their sync snapshots are taken here, as they were at the submit's end
+    pthread_mutex_lock(&nq_mu);
+    for(nq_node *node=j->sfirst;node;node=node->next) if(node->sync_source) {
+        if(node->kind==NQ_FENCE) nq_set_sync((sync_t *)node->sync_source,node->receipt); else nq_snapshot_sync(node,node->sync_source);
+        node->sync_source=NULL;
+    }
+    nq_node *keep=!final && j->slast && j->slast->kind==NQ_COMMANDS && !j->slast->closed ? j->slast : NULL, *end=j->sfirst;   // the node still being copied stays with the submit call
+    if(keep) { if(end==keep) end=NULL; else { while(end->next!=keep) end=end->next; end->next=NULL; } } else end=j->slast;
+    if(end) { if(j->last) j->last->next=j->sfirst; else j->first=j->sfirst; j->last=end; }
+    j->sfirst=j->slast=keep; j->late=0;
+    if(final) j->open=0;
+    if(!j->queued) { j->queued=1; nq_enqueue(nq_get((queue_t *)j->owner),j); } else pthread_cond_broadcast(&nq_cv);
+    pthread_mutex_unlock(&nq_mu);
+}
+// With the lock busy at a cut the worker is replaying, and needs no node yet: the nodes stay, and the copy asks again every 32 records (nq_late), so that a worker that has run
+// out finds them within microseconds and not at the next cut, which can be a whole pass of draws away
+static void nq_cut(nq_job *j) { if(j->held || !j->sfirst) return; if(nq_resolve(j,0)) nq_hand_over(j,0); else j->late=1; }
+static void nq_late(nq_job *j) { if(nq_resolve(j,0)) nq_hand_over(j,0); }
 // One record of a recording, copied into the job (its object pointers snapshotted); waits and fences cut the job. A signal does not: its value is published when the commands
 // it is among complete (mtl_sub_event), and a wait on it is ordered by that value or, while it is in flight, by the fence of those commands (nq_event_write), so the node keeps
 // every signal it records. Each node is a Metal command buffer of its own, so a cut ends the open render pass: BioShock Infinite signals an event per occlusion query, and a cut
@@ -326,11 +364,12 @@ static void nq_record_one(nq_job *j,const uint8_t *p,op_hdr h) {
     const uint8_t *a=p+8;
     if(h.op==OP_END || h.op==OP_JUMP || h.op==OP_CALL) die("NVN command list: a %s record inside a recording's piece at %p",h.op==OP_END?"END":h.op==OP_JUMP?"JUMP":"CALL",(const void *)p);
     if(h.op==OP_WAIT_EVENT || h.op==OP_WAIT_SYNC || h.op==OP_FENCE_SYNC) {
-        nq_end(j); nq_node *n=nq_append(j,h.op==OP_WAIT_EVENT?NQ_EVENT:h.op==OP_WAIT_SYNC?NQ_SYNC:NQ_FENCE);
+        nq_end(j); nq_cut(j); nq_node *n=nq_stage(j,h.op==OP_WAIT_EVENT?NQ_EVENT:h.op==OP_WAIT_SYNC?NQ_SYNC:NQ_FENCE); if(h.op!=OP_FENCE_SYNC) j->waits=1;
         if(h.op==OP_WAIT_EVENT) { memcpy(&n->event,a,8); memcpy(&n->mode,a+8,4); memcpy(&n->value,a+12,4); }
         else { memcpy(&n->sync_source,a,8); if(h.op==OP_FENCE_SYNC) n->receipt=nq_new(); }
     } else {
-        nq_node *n=j->last; if(!n || n->kind!=NQ_COMMANDS || n->closed) n=nq_append(j,NQ_COMMANDS);
+        nq_node *n=j->slast; if(!n || n->kind!=NQ_COMMANDS || n->closed) n=nq_stage(j,NQ_COMMANDS);
+        if(j->late && !(++j->tick&31)) nq_late(j);
         size_t offset=n->length; nq_bytes(n,p,h.size); if(!n->bytes) die("queue commands: a record of %u bytes",h.size);
         if(!cap_rec_fields(h.op,n->bytes+offset+8,h.size,&nq_snapshot_ops,j)) die("queue snapshot: unknown command %u",h.op);
         if(h.op==OP_SIGNAL_EVENT) {
@@ -360,19 +399,16 @@ static void nq_flatten(nq_job *j,const uint8_t *list) {
 static void nq_enqueue(nq_queue *q,nq_job *j) { if(q->last) q->last->next=j; else q->first=j; q->last=j; nq_put(q->tail); q->tail=j->receipt; q->tail->refs++; pthread_cond_broadcast(&nq_cv); }
 void nvn_queue_submit(queue_t *q,int count,const uint64_t *handles) {
     pthread_once(&nq_once,nq_start); nq_job *j=calloc(1,sizeof *j); if(!j) die("queue job allocation failed"); j->receipt=nq_new();
-    j->objects.klen=16; j->frame=dm_nvn_frame_count();
-    // No scheduler lock while copying descriptors or resolving shader libraries.
-    dm_host_mutex_lock(&g_sub_mu); void *pool=objc_autoreleasePoolPush(); dm_host_work++; mtl_prepare(); dm_host_work--; nq_cost cost=nq_cost_begin();
+    j->objects.klen=16; j->frame=dm_nvn_frame_count(); j->owner=q; j->open=1; j->held=!nq_stream_on();
+    // No scheduler lock while copying descriptors or resolving shader libraries. The submission lock: for the first call's prepare step, then only in nq_resolve (see nq_stream_on)
+    static _Atomic int prepared; void *pool=objc_autoreleasePoolPush();
+    if(j->held || !atomic_load(&prepared)) { dm_host_mutex_lock(&g_sub_mu); dm_host_work++; mtl_prepare(); dm_host_work--; atomic_store(&prepared,1); if(!j->held) pthread_mutex_unlock(&g_sub_mu); }
+    nq_cost cost=nq_cost_begin();
     for(int i=0;i<count;i++) nq_flatten(j,(const uint8_t *)(uintptr_t)handles[i]); nq_end(j);
-    nq_cost_end(cost); objc_autoreleasePoolPop(pool); pthread_mutex_unlock(&g_sub_mu);
-    int waits=0; for(nq_node *node=j->first;node;node=node->next) waits|=node->kind==NQ_EVENT || node->kind==NQ_SYNC;
-    nvn_cap_queue(q->serial,waits);
-    pthread_mutex_lock(&nq_mu);
-    for(nq_node *node=j->first;node;node=node->next) if(node->sync_source) {
-        if(node->kind==NQ_FENCE) nq_set_sync((sync_t *)node->sync_source,node->receipt); else nq_snapshot_sync(node,node->sync_source);
-        node->sync_source=NULL;
-    }
-    nq_enqueue(nq_get(q),j); pthread_mutex_unlock(&nq_mu);
+    nq_resolve(j,1);
+    nq_cost_end(cost); if(j->held) pthread_mutex_unlock(&g_sub_mu); objc_autoreleasePoolPop(pool);
+    nvn_cap_queue(q->serial,j->waits);
+    nq_hand_over(j,1);
 }
 // The window retains this logical receipt until it reacquires or finalizes that image.
 // Only replay turns it into a physical display ticket; present never waits on the guest thread.
