@@ -10,6 +10,10 @@ program_id	0400C3F00006E000
 name	Mario Kart World
 ipa	MarioKartWorld.ipa
 app_category	public.app-category.racing-games
+# The Mac app declares LSSupportsGameMode. On the 16-core M2 Pro this profile was tuned on, Game Mode cost nothing in fullscreen (one host in two bundles, with and without
+# a gaming session: the same frame rates, GPU time within 2 %) and did not hold the GPU's clock down (docs/reference/frame-rate.md, macOS Game Mode holds the GPU at its
+# lowest clock, "Another chip"); by Apple's description it also doubles the Bluetooth sampling rate of controllers. off for a Mac where the clock falls
+mac_game_mode	on
 pad_layout	full
 
 # ---- Versions ----

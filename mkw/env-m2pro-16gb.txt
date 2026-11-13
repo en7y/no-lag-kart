@@ -1,15 +1,21 @@
 # Mario Kart World 1.8.0 on a 16 GB M2 Pro MacBook Pro (macOS 26.7): the settings this Mac was measured with (mkw/README.md).
 # Lines that start with # are comments. A file of the same form at ~/Library/Application Support/nxnative/0400C3F00006E000/env.txt overrides these.
 
-# Handheld mode: the game draws 1080p there, which this GPU holds at 60 fps with one and two players (30 fps with three and four, the game's own split-screen mode)
-DM_OPMODE=0
-# MetalFX scales the 1080p picture up to the window or the screen
+# Console (docked) mode for one player: the game draws for a 2560x1440 picture, with reflection maps of twice the size and a larger shadow map than in handheld mode.
+# This GPU holds that at 60 fps; the game's dynamic resolution draws the 3D scene between about 1700x950 and 2200x1230 at a race's start. (0 is handheld mode: 1920x1080.)
+DM_OPMODE=1
+# Split screen in handheld mode: the mode changes at the menu where the game asks for the players' controllers, which stay as they are, and it stays until the game is
+# started again. In console mode this GPU does not hold a split screen (two players 58.4 fps, three 29.6 and four 29.3 of the game's 30, with 48 to 95 frames a minute a
+# refresh late); in handheld mode it holds 60 and 30
+DM_OPMODE_MULTI=0
+# MetalFX scales the picture up to the window or the screen
 DM_PRESENT_UPSCALE=metalfx
 # A late frame does not lengthen the hold of the frames after it
 DM_FPS_HOLD=off
 # GPU headroom: the game reads its frame's GPU time a quarter longer than it was and lowers its render size sooner. No late frame in a minute of a 150cc race with two, three
-# and four players (at 1.20: 3 to 4 a minute in split screen). One player draws within a few per cent of its full size at it
+# and four players (at 1.20: 3 to 4 a minute in split screen). One player in handheld mode draws within a few per cent of its full size at it; in console mode 1.35 gave
+# nothing one whole race could show (4 late frames for 6, a 4 % smaller picture)
 DM_NVN_GPU_TS_PAD=1.25
-# The GPU clock is kept at its top. At auto the clock falls with the load and, with the headroom above, the game draws a fifth to a quarter smaller with one player.
-# About 4.5 W more in a race: auto on battery
+# The GPU clock is kept at its top. At auto the clock falls with the load and, with the headroom above, the game draws a fifth to a quarter smaller with one player in
+# handheld mode. Game Mode does not keep the clock up: in fullscreen with Game Mode on and the keeper off it averaged 1,199 MHz of 1,398. About 4.5 W more in a race: auto on battery
 DM_GPU_KEEP=1
