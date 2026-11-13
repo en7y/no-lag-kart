@@ -26,8 +26,10 @@ static void run(int target,unsigned width,unsigned height,unsigned layers,unsign
             if(n>=8){p[0]=0x7e01;p[1]=0x7c00;p[2]=0xfc00;p[3]=0x8000;}
             CHECK("reference swizzle succeeds",!nvn_swizzle(&t.d,l,a,p,w*8,t.mem));off+=n;
         }
-        uint64_t uploads=g_direct_uploads,dispatches=g_direct_dispatches;mtl_sub_begin();id<MTLTexture> image=tex_mtl(&t);CHECK("texture resolves",image!=nil);finish();
-        int fast=direct&&!(source_offset&7)&&nvn_deswz_gpu_direct_supported(&t.d);CHECK("direct upload selected only when eligible",g_direct_uploads-uploads==(uint64_t)fast);CHECK("one dispatch per mip across all faces",g_direct_dispatches-dispatches==(fast?levels:0));
+        uint64_t uploads=g_direct_uploads,dispatches=g_direct_dispatches,copies=atomic_load(&g_upc_n);mtl_sub_begin();id<MTLTexture> image=tex_mtl(&t);CHECK("texture resolves",image!=nil);finish();
+        int copied=atomic_load(&g_upc_n)>copies;   // DM_NVN_UP_COPY: the source is a copy at an aligned offset of the ring, so the storage's own offset does not decide
+        if(!round&&getenv("DM_NVN_UP_COPY")&&atoi(getenv("DM_NVN_UP_COPY"))>0)CHECK("the first upload reads a copy in the ring (DM_NVN_UP_COPY)",copied);
+        int fast=direct&&(copied||!(source_offset&7))&&nvn_deswz_gpu_direct_supported(&t.d);CHECK("direct upload selected only when eligible",g_direct_uploads-uploads==(uint64_t)fast);CHECK("one dispatch per mip across all faces",g_direct_dispatches-dispatches==(fast?levels:0));
         if(!round)first=image;else CHECK("pending/read texture is not overwritten",image!=previous);
         if(round==2)CHECK("idle spare texture is reused",image==first);previous=image;
         if(atomic_load(&g_up_lost_n)) {

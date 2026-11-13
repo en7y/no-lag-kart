@@ -239,6 +239,7 @@ DM_NVN_UB_PARTIAL	switch	`0`: a uniform block the deferred updates cover only in
 DM_NVN_UDC_AB	diagnostic	`=1` starts with the DontCare store for unwritten attachments off and turns it on after the second screenshot, for an on/off picture comparison in one run
 DM_NVN_UNWRITTEN_DC	switch	`0` disables optional stores elided for loaded, unchanged attachments (on by default, independent of TBDR lookahead), for equivalence comparisons; mandatory image-write preservation stays active
 DM_NVN_UPLOAD_REUSE	switch	0 keeps the original one-block upload-slot policy; default retains bounded demand-sized primary and overflow buffers after completion.
+DM_NVN_UP_COPY	switch	`<MB>` (0 or unset: off): a texture read from a large pool or a texture-only pool is uploaded from a copy in a shared ring of that size, which the residency set holds for good, in place of a zero-copy buffer over its pages put into the residency set for the upload. A copy that finds the ring full takes the zero-copy buffer as before. Mario Kart World: `128` (its scene cuts spent 23 to 92 ms making those pages resident)
 DM_NVN_VBUF_CACHE	switch	`0` turns off the cache of resolved vertex stream addresses and vertex argument table writes across draws (on by default), for A/B runs
 DM_NVN_VCONV_CHECK	diagnostic	`=1` scans the indices again at every reuse of a cached vertex conversion range (`vconv_range`) and reports differences
 DM_NVN_VCONV_CPU	switch	`=1` converts integer vertex inputs fed formats of another class on the CPU, as before, instead of through the shader's shadow inputs (`<key>_bv`)

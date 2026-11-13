@@ -3179,6 +3179,11 @@ static NSMutableArray *g_up_texs, *g_up_views;   // Targets and temporary intege
 static id<MTLBuffer> g_up_block;
 static size_t g_up_block_off, g_up_block_size;
 static NSMutableArray *g_up_keep;
+// The upload source ring (DM_NVN_UP_COPY, up_copy_src): bytes handed out so far (monotonic; the ring offset is head % size), the head at the open batch's last copy, and the
+// bytes of the ring whose batches have completed (raised by each batch's completion handler; batches complete in the order they were committed, so a maximum is enough)
+static id<MTLBuffer> g_upc_blk; static uint64_t g_upc_head, g_upc_batch_end; static _Atomic uint64_t g_upc_done;
+static _Atomic uint64_t g_upc_n, g_upc_bytes, g_upc_full;   // copies made, their bytes, sources the full ring sent back to a zero-copy buffer
+static void upc_done(uint64_t end) { uint64_t d = atomic_load(&g_upc_done); while (d < end && !atomic_compare_exchange_weak(&g_upc_done, &d, end)) {} }
 // Limit overflow staging per batch. The three upload slots bound in-flight
 // batches; up_begin publishes queued commits before waiting for a slot. A single
 // texture larger than the budget gets its own block (uploads are not tiled here).
@@ -3220,6 +3225,7 @@ static void up_flush(void) {
     NSArray *dsts = targets.allObjects;
     static int lost_at = -2; static uint64_t batch_n; if (lost_at == -2) { const char *e = getenv("DM_TEST_UP_LOST"); lost_at = e ? atoi(e) : -1; } int fake_lost = dsts.count && lost_at > 0 && (int)++batch_n == lost_at;
     MTL4CommitOptions *o = [MTL4CommitOptions new];
+    uint64_t upc_end = g_upc_batch_end;   // the ring bytes this batch's copies reach (up_copy_src)
     atomic_fetch_add(&g_up_pending, 1);
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
         if (f.error) { MLOG("[RED] upload command buffer execution error: %s", f.error.description.UTF8String); res_top_once(f.error); gpu_lost_check(f.error, "upload"); }
@@ -3236,6 +3242,7 @@ static void up_flush(void) {
             [views removeAllObjects];   // upload-only integer views share their targets' residency
             res_commit();
         }
+        upc_done(upc_end);
         atomic_store(&g_up_alloc_busy[slot], 0);
         atomic_fetch_sub(&g_up_pending, 1);
         up_wake();
@@ -3427,12 +3434,44 @@ static void rb_swap_rows(uint8_t *p, size_t wb, size_t rows, size_t nz, size_t r
 // one-time read must not leave that memory wired. In Ocarina of Time's first scene, pools that hold only textures took 4.6 GB of the working set against 1.6 GB for the textures made from them.
 // nil elsewhere (or if it is refused: the caller looks the address up as usual). The GPU only reads it, so it is made over the pages the upload has just protected, not through pool_buf,
 // which would make them writable again and the texture count as written at once
+// DM_NVN_UP_COPY=<MB> (0 or unset: off): the source of such an upload is a copy of the texture's storage in a shared ring of that size, which the residency set holds for good,
+// in place of a zero-copy buffer over its pages. Mario Kart World's cut to the starting grid, fullscreen in console mode (upprof, M2 Pro): one player 1,440 source buffers in
+// one frame, 36.9 ms of residency commits for them of 63.7 and about 8 ms making them, in a 131 ms frame; four players 1,064, 23.4 of 41.2 ms, in 111 ms; the cut before the
+// course fly-over 92 of 122 ms. A copy runs at memory speed. The ring is handed out in order; a copy needs room the batches still running do not hold, else its texture takes
+// a zero-copy buffer as before (counted: g_upc_full), so nothing ever waits for the GPU here. A texture over a quarter of the ring keeps its zero-copy buffer too.
+// The copy is taken when the upload is encoded, after nvn_dirty_protect: a later write by the game is caught and re-uploaded as before (the zero-copy buffer read the pages when
+// the GPU ran the upload; both give the texture as it was at the stamp or later)
+static size_t upc_size(void) { static long v = -1; if (v < 0) { const char *e = getenv("DM_NVN_UP_COPY"); v = e ? atol(e) : 0; if (v < 0) v = 0; if (v > 2048) v = 2048;
+    if (v) MLOG("upload sources: copied into a %ld MB ring (DM_NVN_UP_COPY)", v); } return (size_t)v << 20; }
+static void upc_copy(uint8_t *dst, const uint8_t *src, size_t n) {   // a large texture's copy in parts on several cores
+    if (n < (8u << 20)) { memcpy(dst, src, n); return; }
+    size_t parts = 4, step = ((n + parts - 1) / parts + 16383) & ~(size_t)16383;
+    dispatch_apply(parts, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^(size_t i) { size_t o = i * step; if (o < n) memcpy(dst + o, src + o, MIN(step, n - o)); });
+}
+static id<MTLBuffer> up_copy_src(uint64_t addr, uint64_t len, uint64_t *off) {
+    size_t cap = upc_size(); uint64_t need = (len + 255u) & ~(uint64_t)255u;
+    if (!cap || !len || need > cap / 4) return nil;
+    if (!g_upc_blk) {
+        g_upc_blk = [g_dev newBufferWithLength:cap options:MTLResourceStorageModeShared];
+        if (!g_upc_blk) { MLOG("[RED] upload sources: no %zu MB ring, zero-copy buffers as before", cap >> 20); setenv("DM_NVN_UP_COPY", "0", 1); return nil; }
+        res_add(g_upc_blk); res_commit();
+    }
+    uint64_t head = g_upc_head, at = head % cap;
+    if (at + need > cap) head += cap - at;   // it does not fit before the ring's end: from its start
+    if (head + need - atomic_load(&g_upc_done) > cap) { atomic_fetch_add(&g_upc_full, 1); return nil; }
+    upc_copy((uint8_t *)g_upc_blk.contents + head % cap, (const uint8_t *)(uintptr_t)addr, (size_t)len);
+    *off = head % cap; g_upc_head = g_upc_batch_end = head + need;
+    atomic_fetch_add(&g_upc_n, 1); atomic_fetch_add(&g_upc_bytes, len);
+    return g_upc_blk;
+}
+void mtl_upc_stats(uint64_t *n, uint64_t *bytes, uint64_t *full) { *n = atomic_load(&g_upc_n); *bytes = atomic_load(&g_upc_bytes); *full = atomic_load(&g_upc_full); }
 static id<MTLBuffer> up_big_src(uint64_t addr, uint64_t len, uint64_t *off) {
     // Not once the raw memory table holds the whole pool (big_full): the lookup finds that buffer. Ocarina of Time's first scene made 4,664 of these in one batch, 2.1 GB counted against the working set for pages already wired
     pthread_mutex_lock(&g_mu); int k = big_of(addr), in = k >= 0 && !g_big[k].full;
     if (k < 0 && len) { int i = pool_find(addr, len); in = i >= 0 && !g_pools[i].res && !addr_meets(g_pools[i].lo, g_pools[i].hi); }
     pthread_mutex_unlock(&g_mu);
     if (!in || !len) return nil;
+    { id<MTLBuffer> c = up_copy_src(addr, len, off); if (c) return c; }   // DM_NVN_UP_COPY
     uintptr_t pg = (uintptr_t)getpagesize(), a = (uintptr_t)addr & ~(pg - 1), b = ((uintptr_t)addr + len + pg - 1) & ~(pg - 1);
     id<MTLBuffer> buf = [g_dev newBufferWithBytesNoCopy:(void *)a length:b - a options:MTLResourceStorageModeShared deallocator:nil];
     if (!buf) return nil;
@@ -3470,8 +3509,8 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
     g_bp_up_bytes += total;
     void *mb; uint64_t mo;
     // A texture in a large pool (BIG_MIN) or one that holds only textures is read through a buffer of its own, held by the upload batch: a one-time read must not leave that memory wired for good
-    id<MTLBuffer> upsrc = nil;
-    if (!linear && !rb_shift && !sparse && g_nvn_deswz_gpu) { up_begin(); upsrc = up_big_src((uint64_t)t->mem, t->L.size, &mo); if (upsrc) mb = (__bridge void *)upsrc; }
+    id<MTLBuffer> upsrc = nil; unsigned src_batch = 0;   // the upload batch that holds upsrc (g_up_seq)
+    if (!linear && !rb_shift && !sparse && g_nvn_deswz_gpu) { up_begin(); src_batch = g_up_seq; upsrc = up_big_src((uint64_t)t->mem, t->L.size, &mo); if (upsrc) mb = (__bridge void *)upsrc; }
     t_tex_upload_lookup = 1;
     int use_gpu = !linear && !rb_shift && !sparse && g_nvn_deswz_gpu && (upsrc || mtl_addr((uint64_t)t->mem, t->L.size, &mb, &mo));   // a sparse pool's texture is gathered through its page table on the CPU
     t_tex_upload_lookup = 0;
@@ -3497,7 +3536,9 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, id<MTLTexture
         }
         size_t stg_off;
         id<MTLBuffer> stg = up_alloc(total ? total : 16, &stg_off);
-        if (upsrc) { uint64_t mo2; id<MTLBuffer> u2 = up_big_src((uint64_t)t->mem, t->L.size, &mo2); if (u2) { upsrc = u2; mb = (__bridge void *)u2; mo = mo2; } }   // up_alloc may have flushed the batch that held the first one
+        // up_alloc may have flushed the batch that held the first source: only then the new batch needs one of its own (upstream PR #2378; a source made for every texture put
+        // each staged upload's storage twice into the residency set, and with DM_NVN_UP_COPY it would be copied twice)
+        if (upsrc && g_up_seq != src_batch) { uint64_t mo2; id<MTLBuffer> u2 = up_big_src((uint64_t)t->mem, t->L.size, &mo2); if (u2) { upsrc = u2; mb = (__bridge void *)u2; mo = mo2; } }
         size_t off = 0; int enc_ok = g_up_ce != nil, nb0 = g_nup_blits;
         for (unsigned l = 0; enc_ok && l < d.mipmapLevelCount; l++) {
             uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
