@@ -1,13 +1,13 @@
-# What is in `mkw-fin`, and what was measured and left out (2026-11-12, on upstream `352e4a6e`)
+# What is in `mkw-fin`, and what was measured and left out (2026-11-13, on upstream `352e4a6e`)
 
 The rule: a change goes in only if a run on this Mac showed that it helps this game, or if it corrects wrong behaviour on a path the game takes and leaves the
 shader chain alone. A change that could show no gain here stayed out, whatever its author measured on another Mac or game. Every figure is from this Mac
 (16 GB M2 Pro, macOS 26.7.1), update 1.8.0, the routes of `dm/games/0400C3F00006E000/bench.tsv`, mostly one run a variant; the measurements with their runs
 are in `dm/games/0400C3F00006E000/README.md` ("Frame rate") and `docs/reference/frame-rate.md`. 788 open upstream pull requests were listed by the files they
-touch on 2026-11-11 (about 70 read at least as far as their summary), and the 98 that were new or changed by 2026-11-12 were listed again by title; everything
+touch on 2026-11-11 (about 70 read at least as far as their summary), and the 98 that were new or changed by 2026-11-12 were listed again by title, as were those opened up to 2026-11-13 (#2418 to #2537); everything
 under "In" and "left out" was read in full, message and code.
 
-## In: our own fixes (11)
+## In: our own fixes (12)
 
 | # | Fix | Commits | What it changed here |
 |---|---|---|---|
@@ -22,10 +22,11 @@ under "In" and "left out" was read in full, message and code.
 | 9 | Split outputs: the reflection filters drawn once for each cube face (`fs_split`) | `69b833e7` `35defcb7` | filters 1,440 → 950 µs a view; two players 54 → 19 late frames a minute |
 | 10 | The timestamp pad counts from the frame's first submission | `69b833e7` `35defcb7` | the pad acts on this game at all: two players 19 → 0 late frames a minute, four 15 → 0 |
 | 11 | A submission's commit walks the pages its shaders wrote, not the whole page set | `3e947644` | replay thread 1.4 ms a frame faster at a four-player race's start |
+| 12 | The operation mode changes once the controller applet has found two or more players (`DM_OPMODE_MULTI`) | `1aed041f` | one player plays in console mode; a split screen holds 60, 30 and 30 fps where console mode gave 58.4, 29.6 and 29.3 |
 
-Ten have a test in `dm/gfx/tests` or `dm/tools/tests` that fails without the fix; the second is checked against the game's code by its fingerprint.
+Eleven have a test in `dm/gfx/tests`, `dm/host/tests` or `dm/tools/tests` that fails without the fix; the second is checked against the game's code by its fingerprint.
 Tools that are not fixes: `DM_CTL` lines `p2:` … `p8:` (scripted controllers, from PR #1781's idea, `d65a64ff`), `DM_SUBPROF` (the queue worker's stacks in a
-long frame), `DM_NVN_TS_LOG` (a frame's GPU timing reports), memory rows in `frames.tsv`, and `mkw/test`.
+long frame), `DM_NVN_TS_LOG` (a frame's GPU timing reports), memory rows in `frames.tsv`, `mkw/test`, and the profile key `mac_game_mode on` (the Mac app declares `LSSupportsGameMode`, `05531bd2`).
 
 A build step that is not a fix either: the host is compiled with a profile of its own runs (`b629eec9`, `mkw/pgo/README.md`). With four players the replay
 thread takes 7 to 11 % less time a draw, and a whole four-player Grand Prix had 24 late frames where it had 71.
@@ -60,6 +61,17 @@ Data: the warm-up list, 15,062 rows merged from 10 lists of 6 repositories (`mkw
 | GPU clock keeper off / `auto` | off: four players 24.9 fps; `auto`: one player draws 20 to 25 % fewer pixels with the pad |
 | Upstream `d2556cff`, partial texture re-upload | this game re-uploads no texture in a race |
 | Segment size, pass merging off, compute hoisting off, submission-level timestamps, the Metal HUD | each within run-to-run noise |
+| Console mode for a split screen (fullscreen on the built-in screen at a fixed 60 Hz, 2026-11-12) | two players 58.4 fps, three 29.6 and four 29.3 of the game's 30, with 95, 48 and 81 frames a minute a refresh late; the dynamic resolution at its floor. Hence fix 12 |
+| Console mode's split screen made cheaper: graphics scale tier 1 (`DM_GFX_SCALE=1`), the pad at 1.40, `DM_UPSCALER=metalfx`, the array filter split up to 64x64 (`fs_split 765844f5609bb11b:4096`) | two players: 59.7 fps with tier 1 (18 uneven frames a minute), 59.0 with the wider split (GPU 14.27 for 14.55 ms; one player 0.1 ms); the pad and the upscaler changed nothing |
+| The performance mode fixed apart from the operation mode (`exp/perfmode`) | nothing changed either way: the operation mode alone picks the picture |
+| PR #2467, the frame standing in the display link's queue drained (`exp/drain`) | fullscreen: the picture is on screen 17 to 19 ms sooner (one player 65 → 48 ms from the game's present call, four players 95 → 77), and the late frames it covered show: four players 3 uneven frames a minute for 0, one player in console mode 2 for 1 |
+| PR #2495, a frame workgroup, with the replay thread joined (`exp/fwg`) | four players: replay 18.3 for 19.7 ms a frame in one run each (2.5 % fewer draws in it), 30.0 fps and no late frame either way |
+| PR #2526 of 2026-11-13, a submission's first segment committed after 8 draws (`DM_NVN_CUT_FIRST`, `exp/cutfirst`) | on and off on one host: two players in console mode, four in handheld mode, one in console mode: the same frame rates, GPU times and late frames |
+| `DM_PRESENT_LINK=0` in fullscreen | the built-in screen stays in variable refresh; the picture is on screen 24 to 37 ms sooner (one player 41 for 65 ms, four players 59 for 95), no uneven frame in either run. Left out: no run could be made on a fixed 60 Hz TV, where the link is what the owner's own sessions held 60 fps with |
+| The GPU clock keeper off or `auto` in fullscreen with Game Mode | the clock follows the load (1,199 MHz of 1,398 on average); the game draws about 3 % less (render targets 501 to 504 MB for 514 to 527) |
+| Pad 1.35 with one player in console mode | a whole race each: 4 late frames for 6, 1 uneven for 3, render targets 504 MB for 526: nothing one run can show |
+| The guest's memory in files (`DM_GUEST_FILE=1`, 2026-11-13) | a Grand Prix with one player and one with four: footprint 6,021 and 6,347 MiB at its highest for 12,142 and 12,001, no idle daemon ended by the kernel; but 311,073 and 333,848 major faults, a frame of 106 ms while driving with one player and two of 240 and 249 ms at the four-player award scene, 8.5 and 10.2 GB of logical writes in 20 minutes, and 10 GB of free disk needed at the start. Left off (KNOWLEDGE.md, section 0) |
+| PR #2534 of 2026-11-12, texture pool tables hold a view of a texture read through another layered type (`exp/pr2534`) | a run each way: the same frame rate, GPU time and log lines, and the fly-over's pictures looked the same; no sign that this game reads cube maps by handle |
 | Reading a batch's upload sources and a new pool's memory on several cores before the residency commit (ours, 2026-11-12) | the cut to the starting grid got longer, 196 against 139 ms: its sources are resident already, and the commit's cost is its count (below) |
 
 ## Open: the long frame at a scene cut
@@ -79,6 +91,8 @@ during the loading screen; that needs to know first how many registered textures
 | Upstream `224ecb18` and PR #2198, #2199 | each changes the shader chain: all 11,601 shaders built again, for no fault seen in this game |
 | PR #2413, task and mesh shaders as compute (`DM_NVN_MESH_COMPUTE=1`) | new on 2026-11-12, 528 lines, opt-in; its author measured 3.6 % of GPU time on another game's slow spot on an M1. This game has 25 task and mesh shaders (bushes and grass): worth one run |
 | PR #2374, #2344, #2329, #2330, #2412 | real fixes whose fault no run of this game showed |
+| PR #2525 (image-heap aliases flushed less often), PR #2530 (frame generation), PR #2536 (the visibility ring grows on demand) | #2525 acts under `DM_NVN_BARRIER=game` only and keeps the flush for large chunked pools, which this game's are; #2530 is for a game at 20 fps; #2536 mends a phone that ran out of counter buffers ("a Mac never ran dry of the ring", its author) |
+| Released render targets kept for the next texture of their size | console mode with one player makes 410 to 520 textures every 300 frames (KNOWLEDGE.md, section 0); for memory as much as for time |
 | Unretained locals in the replay's hot paths (12.6 % of the replay thread is Objective-C retain and release) | code changes in the hottest paths; to measure on `gp150-4p-r2` and a whole `gp150-4p-full` |
 
 The first triage of 2026-11-11 (before the game ran here) and the earlier combined branches are in this file's history and in `old/…`.

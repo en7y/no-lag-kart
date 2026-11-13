@@ -1,12 +1,12 @@
 # Mario Kart World natively on the Mac: what we know
 
 Sections 1 to 11 were read in sources on 2026-11-11, before the game ran on this Mac, and each line says which source. Section 0 holds what this Mac
-measured on 2026-11-11 and 12; where a run contradicted a later line, the line is corrected and says so.
+measured on 2026-11-11 to 13; where a run contradicted a later line, the line is corrected and says so.
 Sources: **[code]** nxnative's source at upstream `352e4a6e` (2026-11-11); **[note]** upstream's game note `dm/games/0400C3F00006E000/README.md`;
 **[doc]** upstream's `docs/`; **[PR n]** / **[issue n]** of seedds/nxnative; **[sim]** run by us with the host's own code, no game; a repository name for other projects.
 When a first run contradicts a line, the run wins: correct the line and say what was measured.
 
-## 0. What this Mac measured (2026-11-11 and 12: 16 GB M2 Pro, macOS 26.7.1, update 1.8.0)
+## 0. What this Mac measured (2026-11-11 to 13: 16 GB M2 Pro, macOS 26.7.1, update 1.8.0)
 
 The answers to section 11's questions, in its order, then what the work taught beyond them. The figures with their runs: [TRIAGE.md](TRIAGE.md), the game
 note's "Frame rate" (`dm/games/0400C3F00006E000/README.md`) and `docs/reference/frame-rate.md`.
@@ -50,6 +50,113 @@ Beyond the questions:
 - Traps met here, beside section 10's: `make` does not rebuild a source that `cp` restored within the same second as the binary (touch it). A newly packed
   app's first start waits about three minutes while macOS scans the 24 GB bundle. A route's menu presses can slip by one screen (one run of the last night
   went through a cup movie): look at a run's last screenshot before believing its numbers. `DM_AUDIO=0` in the launch environment silences a test start.
+
+### Fullscreen, console mode and Game Mode (2026-11-12 and 13)
+
+Measured the way the game is played: the host inside an app bundle, started through LaunchServices (`open`; `mkw/test/fx.sh`), fullscreen on the built-in screen,
+150cc, the Mushroom Cup's first race, sound off, players 2 to 4 scripted, one run each unless said. `late` is a game frame over 1.5 frame times; `uneven` a frame
+that stayed on screen more than 2 ms off its step (what a player can see).
+
+- **Fullscreen needs the active app.** `DM_FULLSCREEN=1` waits for `NSApp.isActive` and the active Space: a host started by a background process opens its window and
+  never enters fullscreen, and `open -a` on the running app or `NSRunningApplication` activation did not change that. Started through `open -n -a <bundle> --env …` it
+  does. With the screen locked there is no fullscreen and no display link: frame times of such a run measure nothing.
+- **The built-in screen in fullscreen** is switched from its variable 120 Hz to a fixed 60 Hz (upstream `a2cfd4075`, in the base; its note had not run the host's own
+  switch on a ProMotion screen: it runs here, `variable-refresh screen at 120 Hz switched to fixed 60 Hz` in the log, and the screen is back at 120 Hz after the
+  game). The display link then runs at frame latency 1 and puts a frame on screen 65 ms after the game's present call at 60 fps and 95 ms at the game's 30 (a window:
+  82 and 97 to 112 ms). The link's target is 32.8 ms ahead there; on the owner's TV it was 16.5 ms (the log of another game's sessions).
+- **Console mode** (`DM_OPMODE=1`): the swapchain textures are 3840x2160 and the picture is their 2560x1440 corner (the game's window crop); handheld mode's is
+  1920x1080. With one player the game's dynamic resolution draws the 3D scene between 1672x940 and 2188x1228 at a race's start, where handheld mode holds 1920x1080;
+  the reflection maps are twice the size (cube passes of 128x128, the filter chain from 64x64) and the shadow map is 3072x3072 for 2048x2048. One player holds 60.0
+  fps at 11.5 ms of GPU time; a whole race had 6 late frames and 3 uneven in 12,000 (handheld mode on the same route: 4 and 1). The late ones are game frames of 25 to
+  36 ms with 11 ms of GPU work that the screen does not show: the frame standing in the display link's queue covers them.
+- **Console mode does not hold a split screen.** Two players 58.4 fps with 95 uneven frames a minute; three 29.6 of the game's 30 with 48; four 29.3 with 81 (92
+  without Game Mode, 88 in a window). The dynamic resolution is at its floor (each of two views 832x932 of 1280x1440, 0.65 a side; the game reads a frame's GPU time,
+  padded, as 18.97 ms), and what console mode adds does not scale with it: the reflection maps cost about 2 ms a frame more with two players. Tried against it, none
+  enough: graphics scale tier 1 (`DM_GFX_SCALE=1`: 59.7 fps, 18 uneven a minute), the pad at 1.40 (no change), `DM_UPSCALER=metalfx` (no change), the array filter
+  split up to 64x64 (`fs_split 765844f5609bb11b:4096`: GPU 14.27 for 14.55 ms, 59.0 fps). The operation mode alone picks all this: with the performance mode fixed
+  at Normal in console mode nothing changed.
+- **`DM_OPMODE_MULTI=0`** is what the app does instead: console mode until the controller applet has found two or more players, then handheld mode with the
+  controllers as they are (`dm/host/hle_hid.c` `multi_opmode`). The game pops the two mode notifications, sets a 1920x1080 window crop and goes on: two players 60.0
+  fps (GPU 12.3 ms, 0 and 1 uneven frames in two runs), three 30.0 (25.1 ms, none), four 30.0 (25.8 ms). A mode change that moves player 1 to the Handheld npad in a
+  race (`DM_OE_SCRIPT=opmode=0@140`) made the game open the controller applet again, and the race was gone. The change stays until the game is started again: this
+  game opens no applet for one player.
+- **Game Mode** (`LSSupportsGameMode` true, the profile's `mac_game_mode on`): one host in two bundles, with and without a gaming session in the `gamepolicyd` log,
+  gave the same frame rates, GPU time within 2 % and the same replay thread clock (3.06 to 3.09 GHz) with one and four players. It does not keep the GPU's clock up:
+  with the keeper off in Game Mode the clock averaged 1,199 MHz of 1,398 and the game drew about 3 % less (render targets 501 to 504 MB for 514 to 527). The packed
+  app, started as a player starts it: `Found game … labelReason=infoPlist` for the launcher and for the host, `Game mode status is now on` once fullscreen.
+- **The app's host, checked** (pack #4 of 2026-11-13, `dc1b23c8`: the app's own binary in a test bundle, the app's settings): one player in console mode 60.0 fps
+  (GPU 11.5 ms; 2 game frames of 25 ms in 35 s, none of them on screen longer than its step); two players 60.0 fps (12.4 ms, none uneven in 3,600 frames); three 30.0
+  (25.4 ms, none in 1,800); four 30.0 (25.7 ms, none in 1,800). In the 20 s from the starting grid to the start signal: 4 of 1,196 with two players, none with three,
+  3 of 597 with four.
+- **A whole Grand Prix in console mode** (`gp-full-150`, one player, 18 minutes): 59.94 fps, 44 of 64,731 frames on screen longer than their step and 24 never shown
+  (worst minutes 11 and 12, the fifteenth and the seventeenth: scene changes after the races), no pipeline compiled, GPU p50 11.3 ms. 40 of the 44 lie within three frames of a
+  texture upload or a frame over 60 ms (the cuts: 80 to 161 ms a cut frame, as long in handheld mode; 11 of them in 1.2 s at one scene change, 988 s in), 2 are
+  frames held by the bench's own rows (two points down), 2 are plain late frames. The footprint went from 7,882 to 12,142 MiB, compressed memory to 5,863 MB, 40 MB came back from swap.
+  The same Grand Prix in handheld mode in the same configuration (`DM_OPMODE=0`): 39 and 22, in the same places (12 of the 39 in the 1.2 s at 988 s), GPU p50
+  10.4 ms, footprint 11,397 MiB at its highest, compressed 5,611 MB, nothing from swap. Over a whole Grand Prix console mode costs memory (0.7 GiB at the peak,
+  40 MB of swap-ins), not smoothness. Console mode
+  again, with the hand-made disturbances described below set off beside it: 48 and 29, GPU p50 11.3 ms, footprint 11,720 MiB at its highest.
+- **A whole Grand Prix with four players** (`gp150-4p-full`, handheld mode after the change, Game Mode on for its 20 minutes; the host one commit before the app's):
+  30 fps, the GPU's median 23.9 to 26.6 ms in every minute, 27 of 26,212 racing frames on screen longer than their step (25 within three frames of a texture upload;
+  in a window the night before: 24 of 25,593), no minute above 7, 6 frames never shown, footprint 11,722 MiB at its highest, nothing from swap. The same run on the app's own host (`dc1b23c8`): 42 (37 of 25,587 at the 30 fps step; 12 of them in the 9 s from
+  561 s, game frames of 33 to 37 ms shown for 50), worst minute 16, 6 never shown, one pipeline compiled, footprint 12,001 MiB at its highest.
+- **Frames held 70 to 220 ms inside a present call: the bench's per-frame rows, not the game.** Thirteen frames in the fullscreen runs of 2026-11-12 22:33 to
+  2026-11-13 04:35 in which the game had little or no work of its own, the GPU was idle and the display link ran on: 110 to 125 ms with four players (three
+  runs), 103 and 223 ms with one and two, and two or three in each one-player Grand Prix (console mode 94 and 78 ms, handheld mode 78 and 211, console mode
+  again 73, 94 and 73). `@frame_ms` runs from one present call's entry to the next and `@work_ms` from the previous present's return to this one's entry
+  (`hle_nvn.c`): in the seven of the Grand Prix runs work was 1 to 16 ms, so the time sat inside a present call, with about 1 ms of CPU on its thread and none of
+  the waits it counts. That is where `trow` prints the rows of `DM_NVN_TSV`, with stdio on the presenting thread: a 4 KB write every three frames or so.
+  Each came within seconds of a burst of the model catalog chain starting: `mobileassetd` in its startup with `modelcatalogd`, `assetsubscriptiond`,
+  `modelmanagerd` and `assistantd` after it, 16,000 to 18,000 log lines in six seconds where counted. The bursts follow the kernel's sweeps of idle daemons for
+  memory (`/usr/bin/log show --predicate 'process == "kernel" AND eventMessage CONTAINS "killing_idle_process"'`: `memorystatus: killing_idle_process …
+  JETSAM_REASON_MEMORY_IDLE_EXIT`, about a hundred at one a second every 5 to 15 minutes of a run, 280 to 490 in a Grand Prix, at
+  `memorystatus_available_pages` near 266,000; the game's footprint is 11.1 to 11.9 GiB by then), and none came between the runs. With the rows written, 7 of
+  the 9 bursts in three Grand Prix runs held a frame. Without them (two more Grand Prix runs, `MKW_NO_TSV=1`) 5 of the 6 bursts passed with no frame over 32 ms; at the sixth one frame took 165 ms, all of
+  it in the host's submit and present calls, on a results screen half a second before the route's next press: the burst or a scene load, the log cannot
+  say. Every other frame of 60 ms or more in those two runs (9 and 8 in 18 minutes) lies at a scene cut or a scene change. The packed app writes no rows. `mkw/test/host_open.py` leaves them out with `MKW_NO_TSV=1`, and
+  `mkw/test/longlog.py` reads a run's long frames from the host's own `[longframe]` lines; `mkw/test/soaksum.py` lists the frames with next to no work in a run
+  that has the rows. The rows through a pipe to the bench's own process were worse: its reader fell behind and one frame waited 1,163 ms. Not looked into: why
+  the write waits (the disk, or memory for the file's pages), and why the 90 minutes of runs of 2026-11-11 and 12 (shorter, in a window, a child process) had
+  no such frame. Hitch dumps (`DM_HITCH_DUMP`) of three such frames show the main thread in a WaitForAddress with one worker (`BaseProcExecutor0`) running and
+  the rest parked. Taken for the cause before this, each for some hours: a GPU clock sampler beside the runs (`mkw/test/gpufreq.m`), then the sweeps themselves.
+- **The guest's memory in files (`DM_GUEST_FILE=1`) is not this Mac's setting.** A Grand Prix with one player in console mode and one with four players
+  (2026-11-13): the footprint stayed at 6,021 and 6,347 MiB at its highest for 12,142 and 12,001, the compressor under 0.6 GB, and the kernel ended no idle daemon
+  in either window (a two-minute control in the run before them: 84). What it brought: 311,073 and 333,848 major faults a run; with one player a frame of 106 ms
+  while driving, 38 faults in it; with four players three frames of 65 to 88 ms with 2,000 to 4,000 faults each at the scene change after the last race and two
+  of 240 and 249 ms at the award scene (155 and 265 faults), where the anonymous runs' longest frames are 65 to 74 ms; 8.55 and 10.16 GB of logical writes in the
+  20 minutes (3.5 GB of them in the first 10 s), 5.3 and 5.4 GB held on the disk at the end; the count of the dirty pages takes 190 to 390 ms every 10 s (73
+  files of 1 GB over the reservation). The watcher also asks the cache-delete service for the purgeable space every 10 s for its status line
+  (`guest_file_thread`, `hle_svc.c`); the daemon answers from its memory for some minutes and then polls every cache-delete service again (`deleted` about 4,000
+  log lines in three seconds, a dozen helpers started): once in the one run, three times in the other. It needs 10 GB free on the disk at the start (anonymous
+  with a `[RED]` line otherwise) and stops the game under 2 GB of room; this disk had 18 GB free.
+- **Setting disturbances off by hand did not hold a frame.** One Grand Prix with one of three every 35 s: 24 processes started at once (14 times), a process
+  writing 500 MB of new memory (13 times, 68 to 151 ms each), and the question that makes the cache-delete daemon poll its services (3 times,
+  `NSURLVolumeAvailableCapacityForImportantUsageKey`). No frame of 50 ms or more in the 4 s after any of the 30 that was not a scene cut's upload frame.
+- **Trap: `log` in zsh.** `log` is a zsh builtin: `log show …` typed there prints nothing but an error on stderr, and a count of its lines reads 0. Use
+  `/usr/bin/log`.
+- **Console mode with one player makes new render targets all the time.** The residency log of a race shows 410 to 520 new textures every 300 frames at one site
+  (`nvn_mtl.m`, a texture's first storage: 1.2 to 1.6 GB made and freed every 5 s) and 560 to 770 residency commits (80 to 115 ms in the 300 frames). Handheld mode at the same frames: 13 new textures at that site and 170 to 260 commits (12 to 20 ms). It holds
+  60 fps with that; the replay takes 7.2 ms a frame for 5.8 to 6.4 in handheld mode. Not tried: keeping released targets for the next texture of their size.
+- **macOS's Game Mode daemon keeps its verdict on a bundle until the bundle folder's modification date changes.** A bundle first started with `LSSupportsGameMode`
+  false stays "not a game" to `gamepolicyd` after the key is set to true in place and the bundle is signed again: no `Found game` line at its start. Of no effect:
+  `lsregister -f`, unregistering and registering, a rename and back, ten minutes of waiting (LaunchServices itself showed `supports-game-mode` at once). What made the
+  daemon look again: `touch "<App>.app"`, a copy of the bundle at a new path, a new copy at the old path. The bundle identifier plays no part: the packed app keeps
+  its identifier from pack to pack and is found each time, because a pack makes the folder anew. `mkw/test/gmprobe.sh <bundle>` shows the verdict in three seconds.
+- **The settings window and fullscreen.** A setting's value comes from, in this order: the launch environment, the player's `env.txt`, the bundle's `env.txt`, the
+  player's saved choice (`launcher.<VAR>` in the preferences of the bundle identifier), the tested default (`dm/mac/launcher.c`). The bundle's `env.txt` fixes the
+  operation mode and the rest of this Mac's settings; Display mode is not in it, so fullscreen is the player's saved choice: on this Mac
+  `defaults write org.nxnative.0400c3f00006e000 launcher.DM_FULLSCREEN -string 1`, which the window's Display mode shows and changes. "Reset to tested defaults" puts
+  it back to a window.
+- **A scratch save moves the pipeline archive too.** The host keeps its device archive and its own prewarm list beside the save folder (`dirname DM_SAVE`). A start
+  of the packed app with `DM_SAVE` elsewhere found an empty archive there and began the whole prebuild. This game commits its save once at every start, at the title.
+- **Left out after a run**: PR #2467 (the standing frame drained: the picture 17 to 19 ms sooner, and the late frames it covered show: four players 3 uneven a
+  minute for 0); PR #2495 with the replay thread joined (replay 18.3 for 19.7 ms a frame with four players, no frame gained); `DM_PRESENT_LINK=0` in fullscreen (the
+  screen stays variable: 41 for 65 ms with one player, 59 for 95 with four, no uneven frame; left out because no run could be made on a fixed 60 Hz TV); the pad at
+  1.35 with one player in console mode (4 late frames for 6, a 4 % smaller picture); PR #2526 of 2026-11-13 (a submission's first segment committed after 8 draws,
+  `DM_NVN_CUT_FIRST`: on and off on one host, two players in console mode, four in handheld mode, one in console mode: no difference). Not applicable: PR #2525
+  (image-heap aliases flushed less often: under `DM_NVN_BARRIER=game` only, and it keeps the flush for large chunked pools, which this game's are). PR #2534 of 2026-11-12 (a texture pool table holds a view of a texture read through another layered type: cube maps read by handle;
+  `exp/pr2534`, its one conflict the size of `g_red_once`): a run each way with screenshots at the same seconds: the same frame rate, GPU time (11.6 for 11.7 ms)
+  and log lines, no `[pool-type]` line, and the course fly-over looked the same; nothing shows that this game reads a cube map through a table. Left out.
 
 ## 1. How the pieces fit
 
@@ -209,10 +316,12 @@ the `pipelines up to frame` line every 300 frames (draws that waited, by reason)
 
 ## 6. Three ways macOS itself slows a game [doc: reference/frame-rate.md]
 
-- **Game Mode** holds the GPU at its lowest clock after 45 s to 3 minutes of fullscreen. The packed app declares itself not a game
-  (`LSSupportsGameMode` false), but macOS remembers an app it once labelled. Check: `log show --last 10m --predicate 'process == "gamepolicyd"'`.
-- **Fullscreen on a ProMotion screen** (this MacBook's): the host switches the screen to its fixed 60 Hz mode; upstream says that switch was never run on a
-  ProMotion screen. Measure window and fullscreen apart.
+- **Game Mode** held the GPU at its lowest clock after 45 s to 3 minutes of fullscreen on M4 Pro Macs. Not on this one (section 0, "Fullscreen, console mode and
+  Game Mode"): the packed app declares `LSSupportsGameMode` (the profile's `mac_game_mode on`). Check: `/usr/bin/log show --last 10m --predicate 'process == "gamepolicyd"'`.
+- **Fullscreen on a ProMotion screen** (this MacBook's): the host switches the screen to its fixed 60 Hz mode, and with it one player holds 60.0 fps in fullscreen as in
+  a window. With hosts from before 9 November (upstream `a2cfd4075`) the owner's sessions of three other games ran at 35 to 58 fps there for long stretches with GPU
+  time to spare: the 60 Hz display link at frame latency 2 missed its targets, and a game with a fixed step ran in slow motion (Super Mario Odyssey, 2 November: under
+  59 fps in 48 % of 26 minutes, 8.5 ms of GPU time a frame). A window and fullscreen still measure apart: the picture reaches the screen 17 ms sooner in fullscreen.
 - **The GPU clock follows the load**: a GPU that finishes early is clocked down, so the same work takes longer and a 30 fps hold can keep itself alive.
   The frame step's "probes" and PR #1847's GPU clock keeper exist for this. On battery or in Low Power Mode every number is lower.
 

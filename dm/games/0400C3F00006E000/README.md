@@ -84,6 +84,14 @@ At a split-screen race's start, every kart in every view (11,000 draws a frame w
 
 Also from open pull requests of the upstream repository, taken on 2026-11-12: #2328 (a pool buffer retired while a submission commits waits for that submission: found by its author in the code; this game's `Resource Memory` thread finalizes pools all the time while the replay commits 23 to 42 times a frame) and #2348 (the 60 Hz display link is turned off in fullscreen on a fixed-rate screen whose presents keep turning a refresh late: for play on a TV, not measured on this Mac; its note also says that fullscreen on an external screen is slow in every mode while a MacBook's own ProMotion screen is lit beside it, and that a window on the external screen is not). Looked at and left out: #2341 (replay ahead: this game parks no queue on an event its CPU signals, so it never starts; its second cache of texture views made 2 % fewer views here).
 
+Console mode (M2 Pro, 2026-11-13, fullscreen, the runs in `mkw/KNOWLEDGE.md`, section 0). In console mode (`DM_OPMODE=1`) the game draws for 2560x1440 with
+reflection maps of twice the size and a 3072x3072 shadow map. One player holds 60 fps there (GPU 11.5 ms a frame, the dynamic resolution between 1672x940 and
+2188x1228 at a race's start). A split screen does not: two players 58.4 fps, three 29.6 and four 29.3 of the game's 30, with 48 to 95 frames a minute a refresh late;
+the dynamic resolution is at its floor and the larger reflection maps cost about 2 ms a frame. `DM_OPMODE_MULTI=0` changes the operation mode to handheld once the
+controller applet has found two or more players, the controllers staying as they are (`dm/host/hle_hid.c`; the game takes the two mode notifications and a
+1920x1080 window crop and goes on): two players 60.0 fps, three and four 30.0, no frame off its step in a minute each. A mode change in a race that also moves
+player 1 to the Handheld npad made the game open the controller applet again.
+
 ## Memory in free roam
 
 Free roam streams the world as the kart drives on, and without `mem_map_limit` memory kept growing: on a 16 GB M1 Pro (2026-11-06, handheld, headless, a scripted drive into new areas, `DM_MEMSTAT`), the footprint went from 7.8 to 9.4 GB in 12 minutes, the game's own charged memory from 3.9 to 5.3 GB, and macOS compressed 4.5 GB of it, with swap growing. The host's GPU memory grew only 0.3 GB of that; Metal's allocated total rose 2.6 GB, mostly the no-copy buffers over the game's pools. Grand Prix races did not show it.
