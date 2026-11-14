@@ -43,9 +43,10 @@ sys_resource	0x4000000
 # ---- Shader split (shader_split.py) ----
 shader_groups	/Shader/=shader /Effect/=effect /Lib/=lib /Layout/=layout
 shader_note	Mario Kart World shaders
-# No twin samplers and the NaN coordinate guard as fmax, none on cube directions (dmsh_build.py border_emu, nan_coord_fmax): on an M1 Pro the per-sample border branch and the
-# coordinate NaN select kept the samples from overlapping (the cube prefilter 4744589bb8f9f7dd: 2.2 → 0.7 ms a chain). No run printed a border colour Metal lacks (title, menus, the
-# Mushroom Cup's four races). Title screen, M1 Pro, alternating runs: GPU p50 27.0–27.8 → 18.3–19.5 ms a frame
+# No twin samplers, and the NaN coordinate guard off the cube samples (dmsh_build.py border_emu, nan_coord_fmax with cube: a cube direction keeps no guard, a cube array keeps it on
+# its layer, the 2D and array guards stay as translated, which dmsh_fetch.fold matches). PR #1230: on an M1 Pro the per-sample border branch and the coordinate NaN select kept the
+# samples from overlapping (the cube prefilter 4744589bb8f9f7dd: 2.2 → 0.7 ms a chain; title screen, alternating runs, with fmax: GPU p50 27.0–27.8 → 18.3–19.5 ms a frame). On the
+# 16 GB M2 Pro the cube and cube array filters took 3 to 9 % less in a Metal harness (2026-11-13). No run printed a border colour Metal lacks (title, menus, the Mushroom Cup's four races)
 shader_border_emu	0
 shader_nan_coord	cube
 

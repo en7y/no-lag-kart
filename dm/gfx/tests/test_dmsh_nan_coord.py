@@ -1,5 +1,7 @@
 """The coordinate NaN guard as fmax (dmsh_build.py nan_coord_fmax, profile key shader_nan_coord fmax): 2D and array coordinates get fmax(c, -FLT_MAX), a cube direction keeps
-no guard, a cube array keeps it on its layer only, whether the guard is the sample's argument or a temporary the sample reads; other selects stay; the result compiles for macOS."""
+no guard, a cube array keeps it on its layer only, whether the guard is the sample's argument or a temporary the sample reads; other selects stay; the result compiles for macOS.
+shader_nan_coord cube (nan_coord_fmax(msl, cube_only=True)): the cube and cube-array guards change the same way and every other guard stays as translated (dmsh_fetch.fold matches
+the 2D ones)."""
 import ast
 from pathlib import Path
 import re
@@ -96,6 +98,38 @@ class NanCoordFmax(unittest.TestCase):
             src = Path(d) / 'nan_coord.metal'
             src.write_text(self.out)
             r = subprocess.run(['xcrun', '-sdk', 'macosx', 'metal', '-c', str(src), '-o', str(Path(d) / 'nan_coord.air')], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+
+
+class NanCoordCube(unittest.TestCase):
+    def setUp(self):
+        self.out = nan_coord_fmax(SRC, cube_only=True)
+
+    def test_2d_coordinate_kept(self):
+        self.assertIn('fp_t_tcb_4Smplr, select(_10, float2(0.0), isnan(_10)))', self.out)
+
+    def test_array_coordinate_kept(self):
+        self.assertIn('float3 _13 = select(_12, float3(0.0), isnan(_12));', self.out)
+
+    def test_cube_direction_unguarded(self):
+        self.assertIn('fp_t_tcb_6Smplr, _12, level(0.0))', self.out)
+
+    def test_cube_array_layer_only(self):
+        self.assertIn('float4 _17 = float4(_16.xyz, fmax(_16.w, -FLT_MAX));', self.out)
+
+    def test_only_the_cube_guards_changed(self):
+        self.assertEqual(len(re.findall(r'select\((_\d+), float[234]\(0\.0\), isnan\(\1\)\)', self.out)), 2)
+        self.assertNotIn('fmax(_10', self.out)
+
+    def test_other_selects_kept(self):
+        self.assertIn('float _19 = select(_16.x, 0.0, isnan(_16.y));', self.out)
+
+    @unittest.skipUnless(shutil.which('xcrun'), 'needs Xcode')
+    def test_compiles_for_macos(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / 'nan_coord_cube.metal'
+            src.write_text(self.out)
+            r = subprocess.run(['xcrun', '-sdk', 'macosx', 'metal', '-c', str(src), '-o', str(Path(d) / 'nan_coord_cube.air')], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr[-2000:])
 
 
