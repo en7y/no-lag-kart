@@ -469,6 +469,10 @@ static void reuse_tables_case(void) {
 }
 // A cut with earlier work still running stays a boundary for the game's timestamps, and commits only when the GPU has run out; a report after it takes that boundary's time
 static void cut_boundary_case(void) {
+    // An earlier case's mtl_wait can return on the GPU's own signal of its fence (the early waiter, post_complete) before that command buffer's feedback handler has
+    // counted it out of g_seg_inflight, which this case takes as work still running: wait for the handler (it comes about 0.3 ms after the GPU's end)
+    for (int i = 0; i < 5000 && atomic_load(&g_seg_inflight) > 0; i++) usleep(1000);
+    CHECK(atomic_load(&g_seg_inflight) == 0, "no command buffer of an earlier case still in flight");
     tex_t colour; target(&colour, 99810);
     id<MTLBuffer> rep = [g_dev newBufferWithLength:64 options:MTLResourceStorageModeShared]; res_add(rep);
     CHECK(ts_on(), "segment mode has a timestamp heap");
