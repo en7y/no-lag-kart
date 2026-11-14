@@ -1,12 +1,12 @@
 # Mario Kart World natively on the Mac: what we know
 
 Sections 1 to 11 were read in sources on 2026-11-11, before the game ran on this Mac, and each line says which source. Section 0 holds what this Mac
-measured on 2026-11-11 to 13; where a run contradicted a later line, the line is corrected and says so.
+measured on 2026-11-11 to 14; where a run contradicted a later line, the line is corrected and says so.
 Sources: **[code]** nxnative's source at upstream `352e4a6e` (2026-11-11); **[note]** upstream's game note `dm/games/0400C3F00006E000/README.md`;
 **[doc]** upstream's `docs/`; **[PR n]** / **[issue n]** of seedds/nxnative; **[sim]** run by us with the host's own code, no game; a repository name for other projects.
 When a first run contradicts a line, the run wins: correct the line and say what was measured.
 
-## 0. What this Mac measured (2026-11-11 to 13: 16 GB M2 Pro, macOS 26.7.1, update 1.8.0)
+## 0. What this Mac measured (2026-11-11 to 14: 16 GB M2 Pro, macOS 26.7.1, update 1.8.0)
 
 The answers to section 11's questions, in its order, then what the work taught beyond them. The figures with their runs: [TRIAGE.md](TRIAGE.md), the game
 note's "Frame rate" (`dm/games/0400C3F00006E000/README.md`) and `docs/reference/frame-rate.md`.
@@ -24,7 +24,7 @@ note's "Frame rate" (`dm/games/0400C3F00006E000/README.md`) and `docs/reference/
    3 min 15 s as with one player.
 5. The game lowers its resolution by the GPU time it measures, and on the Mac that left it no margin for the host's own work: in split screen it kept its size
    and dropped frames. `DM_NVN_GPU_TS_PAD=1.25` gives it the margin, once the pad counts from the frame's first submission: this game times a frame across 23
-   submissions with two players and 42 with four, and a pad that counts from each submission's own start changed nothing at any factor.
+   submissions with two players and 42 with four, and a pad that counts from each submission's own start changed nothing at any factor. Since 2026-11-14 the pad is not set (the end of this section).
 6. The reflection (cube map) filters were the top GPU cost, a quarter of the GPU's time in split screen, for two reasons that both lie in how Metal compiles
    one fragment shader: a pipeline specialized from a base with open colour state ran it several times slower (`pso_whole`), and one invocation computes all
    six faces whatever the target's size (`fs_split`).
@@ -69,13 +69,13 @@ that stayed on screen more than 2 ms off its step (what a player can see).
   the reflection maps are twice the size (cube passes of 128x128, the filter chain from 64x64) and the shadow map is 3072x3072 for 2048x2048. One player holds 60.0
   fps at 11.5 ms of GPU time; a whole race had 6 late frames and 3 uneven in 12,000 (handheld mode on the same route: 4 and 1). The late ones are game frames of 25 to
   36 ms with 11 ms of GPU work that the screen does not show: the frame standing in the display link's queue covers them.
-- **Console mode does not hold a split screen.** Two players 58.4 fps with 95 uneven frames a minute; three 29.6 of the game's 30 with 48; four 29.3 with 81 (92
+- **Console mode did not hold a split screen** (2026-11-12 and 13; it does since 2026-11-14: the end of this section). Two players 58.4 fps with 95 uneven frames a minute; three 29.6 of the game's 30 with 48; four 29.3 with 81 (92
   without Game Mode, 88 in a window). The dynamic resolution is at its floor (each of two views 832x932 of 1280x1440, 0.65 a side; the game reads a frame's GPU time,
   padded, as 18.97 ms), and what console mode adds does not scale with it: the reflection maps cost about 2 ms a frame more with two players. Tried against it, none
   enough: graphics scale tier 1 (`DM_GFX_SCALE=1`: 59.7 fps, 18 uneven a minute), the pad at 1.40 (no change), `DM_UPSCALER=metalfx` (no change), the array filter
   split up to 64x64 (`fs_split 765844f5609bb11b:4096`: GPU 14.27 for 14.55 ms, 59.0 fps). The operation mode alone picks all this: with the performance mode fixed
   at Normal in console mode nothing changed.
-- **`DM_OPMODE_MULTI=0`** is what the app does instead: console mode until the controller applet has found two or more players, then handheld mode with the
+- **`DM_OPMODE_MULTI=0`** was what the app did instead on 2026-11-13 (not set since 2026-11-14): console mode until the controller applet has found two or more players, then handheld mode with the
   controllers as they are (`dm/host/hle_hid.c` `multi_opmode`). The game pops the two mode notifications, sets a 1920x1080 window crop and goes on: two players 60.0
   fps (GPU 12.3 ms, 0 and 1 uneven frames in two runs), three 30.0 (25.1 ms, none), four 30.0 (25.8 ms). A mode change that moves player 1 to the Handheld npad in a
   race (`DM_OE_SCRIPT=opmode=0@140`) made the game open the controller applet again, and the race was gone. The change stays until the game is started again: this
@@ -84,7 +84,7 @@ that stayed on screen more than 2 ms off its step (what a player can see).
   gave the same frame rates, GPU time within 2 % and the same replay thread clock (3.06 to 3.09 GHz) with one and four players. It does not keep the GPU's clock up:
   with the keeper off in Game Mode the clock averaged 1,199 MHz of 1,398 and the game drew about 3 % less (render targets 501 to 504 MB for 514 to 527). The packed
   app, started as a player starts it: `Found game … labelReason=infoPlist` for the launcher and for the host, `Game mode status is now on` once fullscreen.
-- **The app's host, checked** (pack #4 of 2026-11-13, `dc1b23c8`: the app's own binary in a test bundle, the app's settings): one player in console mode 60.0 fps
+- **The app's host, checked** (pack #4 of 2026-11-13, `dc1b23c8`: the app's own binary in a test bundle, the app's settings with the two stopgaps): one player in console mode 60.0 fps
   (GPU 11.5 ms; 2 game frames of 25 ms in 35 s, none of them on screen longer than its step); two players 60.0 fps (12.4 ms, none uneven in 3,600 frames); three 30.0
   (25.4 ms, none in 1,800); four 30.0 (25.7 ms, none in 1,800). In the 20 s from the starting grid to the start signal: 4 of 1,196 with two players, none with three,
   3 of 597 with four.
@@ -157,6 +157,56 @@ that stayed on screen more than 2 ms off its step (what a player can see).
   (image-heap aliases flushed less often: under `DM_NVN_BARRIER=game` only, and it keeps the flush for large chunked pools, which this game's are). PR #2534 of 2026-11-12 (a texture pool table holds a view of a texture read through another layered type: cube maps read by handle;
   `exp/pr2534`, its one conflict the size of `g_red_once`): a run each way with screenshots at the same seconds: the same frame rate, GPU time (11.6 for 11.7 ms)
   and log lines, no `[pool-type]` line, and the course fly-over looked the same; nothing shows that this game reads a cube map through a table. Left out.
+
+### The settings without stopgaps, and the final build (2026-11-14)
+
+The pad (`DM_NVN_GPU_TS_PAD=1.25`) and handheld mode for a split screen (`DM_OPMODE_MULTI=0`) were set on 2026-11-13 and are gone from the settings since 2026-11-14:
+both lowered the picture. The lines above that name them describe that day. With the streamed submission, segments of 8 draws, the upload ring and the face-layered
+filter pass, console mode holds one to four players in the windows README.md lists; every run's log was checked for the pad's and the mode change's lines.
+
+- **Segments of 8 draws** (`DM_NVN_CUT=8`, the default is 64), measured again with no stopgap (the comparison of 2026-11-13 had the pad on in both arms): four
+  players, the cup's heaviest minute, 64, 8, 8, 64 in turn on one host: frames off their step 10 / 0 / 0 / 38, GPU time a frame 30.16 / 28.93 / 28.54 / 30.49 ms,
+  1,795 / 1,800 / 1,800 / 1,781 of the 1,800 frames; two players, 60 s of the first race, 64 then 8: 18 / 0 off their step, GPU 14.47 / 13.98 ms, 3,583 / 3,600 frames.
+- **Upload copies on worker threads** (`exp/upasync`, ours): the cut frame's upload time fell (4P 100 → 70-75 ms of upload time) but the frames did not: in ABBA runs the
+  excess over the step at the 4P cut was 115 / 105 / 101 / 99 ms (off, on, on, off) and the 1P cut frame 78 / 98 / 98 / 83 ms. Left out.
+- **The commit's GPU state read from a shared event** (`exp/cutev`, `DM_NVN_CUT_EVENT`): two, three and four players, in-run A/B: within noise. Left out.
+- **Lossless compression for resolution families** (PR #2573's idea, `DM_NVN_FAMILY_NOCOMPRESS=0`): the game makes them (its dynamic-resolution scene 1707x960 and its
+  2560x1440 and 1154x648 targets share storage by size). 4P ABBA: GPU 29.02 / 28.72 / 27.98 / 28.51 ms in the heaviest minute, none in the minutes before it; not worth
+  the decoded garbage that a member read after another size wrote it would show. Left out.
+- **The host's profile recorded again** on this branch's code (three windowed runs as a child of the bench, `LLVM_PROFILE_FILE` in continuous mode): four players, the
+  heaviest minute, one run each: the replay's CPU 24.58 → 24.44 ms a frame, GPU 28.67 → 28.93 ms, no frame off its step in either. Kept because it matches the code.
+- **Where a scene cut's time goes** (Time Profiler on the cut to the starting grid with one player, a frame of 88 ms of which 63 ms on the replay thread, 727 textures and
+  148 MB first used): copying the textures' storage into the upload ring 17 ms, part of it macOS taking 4,665 pages back out of its compressor; the copies from staging
+  into the textures 14 ms (Apple's driver makes a temporary texture and a compute dispatch for each of about 5,000 levels); memory pools made resident the first time the
+  GPU reaches them 11 ms (wiring); creating the textures 10 ms (each its own allocation in the kernel); the edge copies of the write tracking 8 ms; the deswizzle dispatches
+  4 ms. No part dominates. What would remove the frame is making these textures before the cut, and the game keeps about 33,000 textures (900 MB) loaded that it never
+  draws, so uploading ahead costs that much memory.
+- **Memory pressure is the game's own.** Four players, racing (top, 2026-11-14 01:26): 15 GB of 16 used, 7.4 GB wired, 100 MB free, 8.9 GB held in the compressor (4.2 GB of
+  memory); the game's footprint 11 GB, of which 4.6 GB compressed; the other apps 2 GB, most of it compressed already. What the host keeps resident (4.8 GB: textures 1.3 GB,
+  heaps 2.1 GB of which 1 GB the terrain's sparse tiles, pools' buffers 1.1 GB, upload staging 192 MB) is wired, so macOS compresses the game's own memory, and every
+  first touch of a compressed page costs a decompression: 46,000 to 55,000 pages a minute in the heaviest 4P minute (up to 2,200 in one frame), and in every 4P run a
+  frame of 55 to 78 ms about a second after the start-line cut in which the game itself took back about 9,800 pages (150 MB) while the replay worked 2 to 3 ms.
+- **A whole Grand Prix per player count** on cups and characters no earlier run used (2026-11-14; the host of `mkw-fin3` one commit before PR #1230,
+  fullscreen, Game Mode, console mode, 150cc, 18 minutes from the first race's start through the award, the bench's per-frame rows on, one run each; `soaksum.py`):
+  one player, Flower Cup: 59.95 fps, 51 frames a refresh longer than their step (42 beside a cut, 9 while driving), 25 never shown, none compiled; two players, Star Cup: 59.78 fps, 231 frames a refresh longer than their step (55 beside a cut, 176 while driving, 160 of them in three minutes of
+  one race), 7 never shown, 2 pipelines compiled; three players, Shell Cup: 37 longer (32 beside a cut, 5 while driving), 4 never shown, none compiled; four
+  players, Banana Cup: 101 longer (46 beside a cut, 55 while driving, 46 and 35 in two minutes), 3 never shown, 2 compiled. In a 30 fps Grand Prix the menus and
+  results run at 60 fps, which the reader counts as frames shorter than the step (15,725 and 18,746): not faults. Nothing came back from swap in any of them.
+- **The heavier courses.** Two players, Star Cup, the worst minute (70 frames a refresh late): the GPU took 15.1 ms a frame at the median and 16.3 at the 90th
+  percentile of the 16.7 it has (a quiet minute: 13.9 and 14.7), with 216 render passes a frame against 197; the replay's wall time 11.2 ms, as in the quiet minute,
+  and the game's thread waited on the GPU (SyncWait 7.3 ms a frame against 0.9): bound by the GPU. Four players, Banana Cup, the two worst minutes (46 and 35):
+  GPU 30.6 and 29.9 ms of the 33.3, the replay's wall time 27.7 and 23.3 ms (90th percentile 35.6 and 29.4), 10,550 and 7,290 draws a frame against 9,100 in a
+  quiet minute: GPU and replay both at the edge. Every render pass costs about 30 µs of GPU time on this Mac whatever its size (the harness of 2026-11-13), and a
+  two-player frame has about 200 of them. On the final host (after PR #1230) the two Grands Prix with the heavier minutes again, one run each: two players, Star Cup: 199 longer (46 beside a cut, 153 while driving) against 231, the worst minute the same one (780-840 s: 111 against 70; GPU 15.46 ms a frame at the median against 15.12), no pipeline compiled, the footprint at its highest 11,056 MiB; four players, Banana Cup, with the wait ledger (`DM_NVN_WAITS=1`): 50 longer (27 beside a cut, 23 while driving) against 101, the worst minutes the same two (29 and 14 against 35 and 46), 5 pipelines compiled in play with no frame off its step at them, the footprint at its highest 12,083 MiB. In the four-player run's heaviest ten seconds the game's thread waited on the GPU's newest fence 7.6 to 12.0 ms a frame (a quiet minute: 0.4 to 3.8), and the replay thread waited for the encode thread 43 times a frame, every one blocked, about 2 ms a frame in heavy and quiet minutes alike. So the heavy minutes are the GPU's with four players as with two; the encode wait is a fixed 2 ms of every four-player frame.
+- **Memory in those Grands Prix** (`DM_MEMSTAT`, `mempeak.py`): the footprint at its highest 11,661 MiB with one player, 11,654 MiB with two players, 12,788 with three (the highest
+  of all runs here; the highest before was 12.1 GiB, the one-hour run of 2026-11-13), 11,652 with four. At the three-player peak: the game's own memory 5,608 MiB charged, 1,916 of it resident
+  (the rest in the compressor), the graphics ledger 5,476, the host's heap 979, the rest 725; Metal's allocated size 11,667, which counts the buffers that wrap
+  the game's own memory and is not on top of the footprint; compressed 5,157 MiB. Swap-ins 0 in every run.
+- **PR #1230, the last change** (2026-11-14): every shader built again (11,601 in 7 min 35 s, chain `d167000758c5`); the offline pipeline archive 470 MB,
+  with the same 9,591 bases and 728 compute pipelines as before; the bench's prebuild built 8,892 bases in 93 s (699 unchanged ones were archived already); the app's first
+  start compiled 7,283 whole pipelines in 64 s before its first frame and wrote 7,303 to its archive. In play, against the host one commit before it, one run each
+  (two with one player): GPU 13.38 → 13.28 and 13.71 ms (one player), 14.15 → 14.07 (two), 28.93 → 28.41 (four), the replay's wall time 9.87 → 9.72 and 9.71, 11.43 →
+  11.40, 30.04 → 29.70 ms: within run-to-run noise. The bench's screenshots of those runs show no fault.
 
 ## 1. How the pieces fit
 
