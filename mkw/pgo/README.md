@@ -4,12 +4,14 @@
 branch and call ran in the recorded runs. No source line changes, and a build without the file is the plain `-O2` host. Other games' hosts are built
 without it: a profile says nothing of code its runs never reached, and clang lays such code out as cold.
 
-Recorded on 2026-11-12 on the 16 GB M2 Pro from the host of `mkw-fin` at `201b1bbd`: an instrumented build (`-fprofile-instr-generate`) played the routes
-`gp150-4p` (180 s), `gp150-2p` (180 s) and `gp-start-150` (135 s) with the real sound output running silently (`DM_AUDIO=1 DM_AUDIO_MUTE=1`), so the start,
-the menus, the course's movie, the race in the 60 and the 30 fps mode and the sound path are in it. The three `.profraw` files were merged with
-`xcrun llvm-profdata merge`.
+Recorded on 2026-11-14 on the 16 GB M2 Pro from the host of `mkw-fin3` at `981c9aab`: an instrumented build (`-fprofile-instr-generate`) played the routes
+`gp150-4p` (180 s), `gp150-2p` (180 s) and `gp-start-150` (135 s) in a window, as a child of the bench (`LLVM_PROFILE_FILE` must reach the host, and an app
+started through `open` gets only `DM_`, `MKW_`, `MTL_` and `METAL_` variables), in console mode, with the real sound output running silently
+(`DM_AUDIO=1 DM_AUDIO_MUTE=1`), so the start, the menus, the course's movie, the race in the 60 and the 30 fps mode and the sound path are in it. The three
+`.profraw` files were merged with `xcrun llvm-profdata merge`. It replaces the first recording (2026-11-12, from `mkw-fin` at `201b1bbd`), which the
+streamed submission, the upload ring, the face-layered filter passes and the per-draw feedback checks had made stale where the replay spends its time.
 
-Measured, four players at 150cc, one run each of the same source built with and without the profile (the replay thread, medians a frame):
+Measured with the first recording, four players at 150cc, one run each of the same source built with and without the profile (the replay thread, medians a frame):
 
 | Stretch | Draws a frame | Instructions a draw | CPU time | Time on the clock | Late frames |
 |---|---|---|---|---|---|
