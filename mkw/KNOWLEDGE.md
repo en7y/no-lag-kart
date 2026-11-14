@@ -369,8 +369,8 @@ the `pipelines up to frame` line every 300 frames (draws that waited, by reason)
 - **Game Mode** held the GPU at its lowest clock after 45 s to 3 minutes of fullscreen on M4 Pro Macs. Not on this one (section 0, "Fullscreen, console mode and
   Game Mode"): the packed app declares `LSSupportsGameMode` (the profile's `mac_game_mode on`). Check: `/usr/bin/log show --last 10m --predicate 'process == "gamepolicyd"'`.
 - **Fullscreen on a ProMotion screen** (this MacBook's): the host switches the screen to its fixed 60 Hz mode, and with it one player holds 60.0 fps in fullscreen as in
-  a window. With hosts from before 9 November (upstream `a2cfd4075`) the owner's sessions of three other games ran at 35 to 58 fps there for long stretches with GPU
-  time to spare: the 60 Hz display link at frame latency 2 missed its targets, and a game with a fixed step ran in slow motion (Super Mario Odyssey, 2 November: under
+  a window. With hosts from before 9 November (upstream `a2cfd4075`) earlier sessions of other games ran at 35 to 58 fps there for long stretches with GPU
+  time to spare: the 60 Hz display link at frame latency 2 missed its targets, and a game with a fixed step ran in slow motion (2 November: under
   59 fps in 48 % of 26 minutes, 8.5 ms of GPU time a frame). A window and fullscreen still measure apart: the picture reaches the screen 17 ms sooner in fullscreen.
 - **The GPU clock follows the load**: a GPU that finishes early is clocked down, so the same work takes longer and a 30 fps hold can keep itself alive.
   The frame step's "probes" and PR #1847's GPU clock keeper exist for this. On battery or in Low Power Mode every number is lower.
