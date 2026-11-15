@@ -2863,10 +2863,11 @@ def say_push_romfs(image, bundle_id):
     if not os.path.isfile(image): say('[RED] the extraction holds a RomFS folder, not an image: this build carries no identity for it, and push_romfs.sh packs the folder first (delete extract/ and build again for an image)')
 
 
-def report_fix_coverage(patched, mods, reg):
+def report_fix_coverage(patched, mods, reg, tested=False):
     """What the modules of builds the profile does not register kept of their registered builds' cuts: the rewriter's <module>.match.tsv (patch_nso.py) lists the cuts of those
     builds and each function patch's result; a game patch not applied, or registered cuts with no function patch at all, is a red line (the game may stop where they were needed).
-    SDK-wide patches (sdk_patches.py) are listed as applied or not, without red: a module of a game without virtual address memory needs none"""
+    SDK-wide patches (sdk_patches.py) are listed as applied or not, without red: a module of a game without virtual address memory needs none. For a build the profile was
+    tested on (tested: its tested_builds), SDK-wide patches that did not apply are left to the match tables: the build ran as tested without them"""
     for m in mods:
         try: rows = [l.split('\t') for l in (patched / f'{m}.match.tsv').read_text().splitlines() if l and not l.startswith('#')]
         except OSError: continue
@@ -2874,7 +2875,7 @@ def report_fix_coverage(patched, mods, reg):
         tried = [r[1:] for r in rows if r[0] == 'patch' and len(r) == 4]
         sdk = [r[1:] for r in rows if r[0] == 'sdk' and len(r) == 4]
         lost = '; '.join(f'{disp} ({bid[:8]}…) has {n} cuts' for bid, disp, n in known)
-        if sdk:
+        if sdk and (not tested or any(offs != '-' for _, offs, _ in sdk)):
             applied, absent = [n for n, offs, _ in sdk if offs != '-'], [n for n, offs, _ in sdk if offs == '-']
             say(f'{m}: SDK-wide patches' + (f' applied: {", ".join(map(repr, applied))}' if applied else '') + ('; ' if applied and absent else '')
                 + (f' with no reviewed implementation in this build, so not applied: {", ".join(map(repr, absent))}' if absent else ''))
@@ -2895,14 +2896,18 @@ def report_profile_status(g, reg, pkg_ver, derived, provisional, artifact='IPA',
         known = {(m, b) for row in reg.builds().values() for m, b in row.items() if m != 'display'}
         other = [m for m, b in g.builds()[pkg_ver].items() if m != 'display' and (m, b) not in known]
         registered_builds = ", ".join(f'{v} {b["display"]}' for v, b in reg.builds().items())
+        tested = g.builds()[pkg_ver].get('main') in g.words('tested_builds', '')   # a build the profile was tested on, though not brought up on (Mario Kart World 1.8.0)
         if g.title_id == reg.title_id and g.builds() == reg.builds():
             say(f'this {artifact} uses the registered {pkg_ver} ({disp}) builds and every fix for them, with derived shader tables ({derived})')
+        elif tested and g.title_id == reg.title_id:
+            say(f'this {artifact} uses {pkg_ver} ({disp}), a build game profile {reg.id} was tested on (tested_builds), with its settings and this version\'s own shaders; '
+                'function patches apply on a verified code match (see rewrite logs)')
         elif g.title_id != reg.title_id and not other and pkg_ver in reg.builds():   # a registered build under another title ID (same_build): every fix applies
             say(f'this {artifact} is game profile {reg.id}\'s {pkg_ver} ({disp}) under title ID {g.title_id:016X}: its settings and every fix for its builds, with shaders split from this title\'s own files')
         else: say(f'[RED] this {artifact} uses {pkg_ver} ({disp}), which game profile {reg.id} was not brought up on ({registered_builds}): '
             'its settings, with this version\'s own shaders' + (f'; {", ".join(other)} {"is a build" if len(other) == 1 else "are builds"} the profile does not register, so the fixes made for '
             'the registered builds\' fixed addresses do not apply there; opt-in function patches apply only on a verified code match (see rewrite logs), and the game may not run as well' if other else '; every module is a registered build'))
-        if other and patched: report_fix_coverage(patched, other, reg)
+        if other and patched: report_fix_coverage(patched, other, reg, tested)
     if provisional:
         say(f'[RED] this {artifact} was built from a provisional game profile and the game may not boot: {g.dir}')
         say(f'  bring-up on the Mac: DM_GAMES_DIR="{g.dir.parent}" make -C dm/host GAME={g.id} dmhost, see docs/agents')

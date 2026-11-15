@@ -24,6 +24,9 @@ build	v0	v0	main=9e244438c3d8ef1c703a6a85ef99c4f0	subsdk0=d39a7a3d44530bb61b3569
 # Update 1.8.0 (v917504) is packed from a profile derived from this one. A dump has no control data, so the display version comes from here: the app's version
 # and what the game's GetDisplayVersion answers (main's build ID of 1.8.0 = 1.8.0)
 known_display	d00e4f399e411d0613aa8d26b1c02fef=1.8.0
+# 1.8.0 is the build this profile's frame rate work was measured on (mkw/README.md), so a build of it is reported as tested instead of with the warning for a version the
+# profile was not brought up on; the SDK-wide patches that match nothing in it (sdk_patches.py: Unity's stream buffer, the address region rules) stay in the match tables
+tested_builds	d00e4f399e411d0613aa8d26b1c02fef
 package	v0
 shader_versions	v0
 
