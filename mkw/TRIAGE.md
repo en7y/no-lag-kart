@@ -13,24 +13,24 @@ at least as far as their summary), and the 98 that were new or changed by 2026-1
 
 | # | Fix | Commits | What it changed here |
 |---|---|---|---|
-| 1 | The frame step ends at the game's longest step (`fps_step_max 2`) | `bd3c1a07` | no hold of 3 vsyncs at two thirds of the game's speed |
-| 2 | Update 1.8.0 gets the frame step: its frame-interval function is found by a second fingerprint | `17b21cb8` | no slow motion after a late frame on 1.8.0 |
-| 3 | A prewarm line that names a shader at another stage than the shader map's is left out | `a8ea6379` | 19 rows of an online list stopped the prepare step |
-| 4 | A table row after a control section is no BAHS program entry | `01866e0a` | 1.8.0's shader packages split cleanly |
-| 5 | Render pipelines compiled whole (`pso_whole`) | `999d1a69` | GPU 14.1 → 12.6 ms a frame; late frames 48 → 1 to 6 a minute |
-| 6 | Task and mesh draws join slice-merged passes | `3bae4c7a` `bb80e339` `bf483269` | sky cube map 13 passes a view → 6; GPU 13.0 → 12.3 ms; four players 26.8 → 28.8 fps |
-| 7 | A memory pool's Finalize costs what the pool holds | `af955680` `c592270b` `4574601d` | the 50 to 70 ms freeze once per stretch of track: 14 of 17 runs → 1 of 12 |
-| 8 | A sparse texture shares storage only with pools its pool has mapped pages of | `af5f0aca` | sky cube map 6 passes a view → 1; GPU 12.4 → 11.85 ms |
-| 9 | Split outputs: the reflection filters drawn once for each cube face (`fs_split`) | `69b833e7` `35defcb7` | filters 1,440 → 950 µs a view; two players 54 → 19 late frames a minute |
-| 10 | The timestamp pad counts from the frame's first submission | `69b833e7` `35defcb7` | the pad acts on this game at all: two players 19 → 0 late frames a minute, four 15 → 0 (the pad is not set since 2026-11-14) |
-| 11 | A submission's commit walks the pages its shaders wrote, not the whole page set | `3e947644` | replay thread 1.4 ms a frame faster at a four-player race's start |
-| 12 | The operation mode changes once the controller applet has found two or more players (`DM_OPMODE_MULTI`) | `1aed041f` | one player plays in console mode; a split screen holds 60, 30 and 30 fps where console mode gave 58.4, 29.6 and 29.3 (not set since 2026-11-14: console mode holds a split screen with fixes 13, 17 and 18) |
+| 1 | The frame step ends at the game's longest step (`fps_step_max 2`) | `af97da96` | no hold of 3 vsyncs at two thirds of the game's speed |
+| 2 | Update 1.8.0 gets the frame step: its frame-interval function is found by a second fingerprint | `cabb61a5` | no slow motion after a late frame on 1.8.0 |
+| 3 | A prewarm line that names a shader at another stage than the shader map's is left out | `1b194054` | 19 rows of an online list stopped the prepare step |
+| 4 | A table row after a control section is no BAHS program entry | `47b906b6` | 1.8.0's shader packages split cleanly |
+| 5 | Render pipelines compiled whole (`pso_whole`) | `b2e4db92` | GPU 14.1 → 12.6 ms a frame; late frames 48 → 1 to 6 a minute |
+| 6 | Task and mesh draws join slice-merged passes | `72baf2db` `9ebf8606` `6f62dc83` | sky cube map 13 passes a view → 6; GPU 13.0 → 12.3 ms; four players 26.8 → 28.8 fps |
+| 7 | A memory pool's Finalize costs what the pool holds | `0e087b1e` `e1ddd53e` `436a88dd` | the 50 to 70 ms freeze once per stretch of track: 14 of 17 runs → 1 of 12 |
+| 8 | A sparse texture shares storage only with pools its pool has mapped pages of | `e3fb27c3` | sky cube map 6 passes a view → 1; GPU 12.4 → 11.85 ms |
+| 9 | Split outputs: the reflection filters drawn once for each cube face (`fs_split`) | `5573ab78` `1e67dc8b` | filters 1,440 → 950 µs a view; two players 54 → 19 late frames a minute |
+| 10 | The timestamp pad counts from the frame's first submission | `5573ab78` `1e67dc8b` | the pad acts on this game at all: two players 19 → 0 late frames a minute, four 15 → 0 (the pad is not set since 2026-11-14) |
+| 11 | A submission's commit walks the pages its shaders wrote, not the whole page set | `530d3c93` | replay thread 1.4 ms a frame faster at a four-player race's start |
+| 12 | The operation mode changes once the controller applet has found two or more players (`DM_OPMODE_MULTI`) | `17a7e92e` | one player plays in console mode; a split screen holds 60, 30 and 30 fps where console mode gave 58.4, 29.6 and 29.3 (not set since 2026-11-14: console mode holds a split screen with fixes 13, 17 and 18) |
 
 Eleven have a test in `dm/gfx/tests`, `dm/host/tests` or `dm/tools/tests` that fails without the fix; the second is checked against the game's code by its fingerprint.
-Tools that are not fixes: `DM_CTL` lines `p2:` … `p8:` (scripted controllers, from PR #1781's idea, `d65a64ff`), `DM_SUBPROF` (the queue worker's stacks in a
-long frame), `DM_NVN_TS_LOG` (a frame's GPU timing reports), memory rows in `frames.tsv`, `mkw/test`, and the profile key `mac_game_mode on` (the Mac app declares `LSSupportsGameMode`, `05531bd2`).
+Tools that are not fixes: `DM_CTL` lines `p2:` … `p8:` (scripted controllers, from PR #1781's idea, `1cc3d98e`), `DM_SUBPROF` (the queue worker's stacks in a
+long frame), `DM_NVN_TS_LOG` (a frame's GPU timing reports), memory rows in `frames.tsv`, `mkw/test`, and the profile key `mac_game_mode on` (the Mac app declares `LSSupportsGameMode`, `9f794fd5`).
 
-A build step that is not a fix either: the host is compiled with a profile of its own runs (`b629eec9`, `mkw/pgo/README.md`). With four players the replay
+A build step that is not a fix either: the host is compiled with a profile of its own runs (`56213e57`, `mkw/pgo/README.md`). With four players the replay
 thread takes 7 to 11 % less time a draw, and a whole four-player Grand Prix had 24 late frames where it had 71. Recorded again on 2026-11-14 (fix 23).
 
 ## In: our own fixes since `mkw-fin` (2026-11-13 and 14)
@@ -39,17 +39,17 @@ Measured fullscreen on the built-in screen (fixed 60 Hz), Game Mode on, console 
 
 | # | Fix | Commit | What it changed here |
 |---|---|---|---|
-| 13 | The streamed submission: a submit call's copy of the game's commands no longer holds the submission lock, and each cut hands its nodes to the replay worker at once (`DM_NVN_SUBMIT_STREAM`, on) | `1395290e` | the GPU starts on a frame 0.9 ms after the game submits it, where it waited for the whole frame's copy; console mode, one host (2026-11-13, the pad still on in both arms): two players 58.7 → 59.9 fps (frames shown off their step 80 → 7 a minute), four players 29.4 → 29.9 (90 → 10) |
-| 14 | MetalFX up to a player count (`DM_PRESENT_UPSCALE_PLAYERS`) | `75663f6b` | a switch only; not set: MetalFX stays on for every player count (plain present gave the game GPU time back as resolution, not frames) |
-| 15 | The operation mode changes from a given player count (`DM_OPMODE_MULTI_FROM`) | `846881d6` | a switch for `DM_OPMODE_MULTI`; neither is set |
-| 16 | A period's archive write and the pipeline compiles do not overlap (port of upstream `cc8f4490`) | `b5ee34b9` | Metal crashed when an archive write met a compile; this game fills its archive in bulk after a shader rebuild |
-| 17 | Upload sources copied into a 128 MB resident ring (`DM_NVN_UP_COPY=128`) in place of a zero-copy buffer made resident for each upload | `3f9d1139` | a scene cut's residency work halves; cut frames 20 to 28 ms shorter (2026-11-13, the pad on in both arms) |
-| 18 | The reflection filters' face-layered pass: a listed shader's draw into the faces of one cube map level up to 64x64 runs as one layered pass (`DM_NVN_FS_LAYER`, on) | `4d34eaf8` | a cube filter chain (64x64 to 2x2) 386 → 296 µs in a Metal harness; with the array filter split up to 64x64 two players hold 60 fps in console mode |
-| 19 | The per-draw feedback checks read each binding's serial once and look a texture up only for an attachment | `1bbee5ac` | four players: the replay thread 0.5 to 0.8 ms less CPU a frame |
-| 20 | `t_feedback`'s cut case waits for the earlier cases' command buffers (a test that read the queue's count too early) | `634ab294` | 279 checks pass, three runs of three |
-| 21 | This Mac's settings without the two stopgaps; `DM_NVN_CUT=8` and `DM_NVN_UP_COPY=128`; the cube array filter split up to 64x64 (`fs_split 765844f5609bb11b:4096`) | `55beb3a8` | the before/after table in README.md; `DM_NVN_CUT` 64 against 8 on one host, four players, the heaviest minute: 10 and 38 frames off their step against 0 and 0, GPU 30.2 and 30.5 ms against 28.9 and 28.5 |
-| 22 | The bench's `host_open.py` stops the game by its process ID; no process list without a time limit | `981c9aab` | a hung `pgrep` (a stuck macOS service) no longer leaves a game running beside the next start |
-| 23 | The host's profile recorded again on this code | `399efa7d` | four players, the heaviest minute, one run each: the replay's CPU 24.58 → 24.44 ms a frame, GPU 28.67 → 28.93 ms: no measurable difference; kept because it matches the code it was made from (`mkw/pgo/README.md`) |
+| 13 | The streamed submission: a submit call's copy of the game's commands no longer holds the submission lock, and each cut hands its nodes to the replay worker at once (`DM_NVN_SUBMIT_STREAM`, on) | `6d7e5c8c` | the GPU starts on a frame 0.9 ms after the game submits it, where it waited for the whole frame's copy; console mode, one host (2026-11-13, the pad still on in both arms): two players 58.7 → 59.9 fps (frames shown off their step 80 → 7 a minute), four players 29.4 → 29.9 (90 → 10) |
+| 14 | MetalFX up to a player count (`DM_PRESENT_UPSCALE_PLAYERS`) | `d6c5622d` | a switch only; not set: MetalFX stays on for every player count (plain present gave the game GPU time back as resolution, not frames) |
+| 15 | The operation mode changes from a given player count (`DM_OPMODE_MULTI_FROM`) | `1744b35a` | a switch for `DM_OPMODE_MULTI`; neither is set |
+| 16 | A period's archive write and the pipeline compiles do not overlap (port of upstream `cc8f4490`) | `958ffb29` | Metal crashed when an archive write met a compile; this game fills its archive in bulk after a shader rebuild |
+| 17 | Upload sources copied into a 128 MB resident ring (`DM_NVN_UP_COPY=128`) in place of a zero-copy buffer made resident for each upload | `a268e4a5` | a scene cut's residency work halves; cut frames 20 to 28 ms shorter (2026-11-13, the pad on in both arms) |
+| 18 | The reflection filters' face-layered pass: a listed shader's draw into the faces of one cube map level up to 64x64 runs as one layered pass (`DM_NVN_FS_LAYER`, on) | `1c2abfc1` | a cube filter chain (64x64 to 2x2) 386 → 296 µs in a Metal harness; with the array filter split up to 64x64 two players hold 60 fps in console mode |
+| 19 | The per-draw feedback checks read each binding's serial once and look a texture up only for an attachment | `4fb6a185` | four players: the replay thread 0.5 to 0.8 ms less CPU a frame |
+| 20 | `t_feedback`'s cut case waits for the earlier cases' command buffers (a test that read the queue's count too early) | `d8a73a5c` | 279 checks pass, three runs of three |
+| 21 | This Mac's settings without the two stopgaps; `DM_NVN_CUT=8` and `DM_NVN_UP_COPY=128`; the cube array filter split up to 64x64 (`fs_split 765844f5609bb11b:4096`) | `40dba87f` | the before/after table in README.md; `DM_NVN_CUT` 64 against 8 on one host, four players, the heaviest minute: 10 and 38 frames off their step against 0 and 0, GPU 30.2 and 30.5 ms against 28.9 and 28.5 |
+| 22 | The bench's `host_open.py` stops the game by its process ID; no process list without a time limit | `cb68adf7` | a hung `pgrep` (a stuck macOS service) no longer leaves a game running beside the next start |
+| 23 | The host's profile recorded again on this code | `dc3325db` | four players, the heaviest minute, one run each: the replay's CPU 24.58 → 24.44 ms a frame, GPU 28.67 → 28.93 ms: no measurable difference; kept because it matches the code it was made from (`mkw/pgo/README.md`) |
 
 Fixes 10 (the timestamp pad counts from the frame's first submission) and 12 (`DM_OPMODE_MULTI`) stay in the code with their tests, and the settings no longer
 use them: the pad and handheld mode for a split screen were stopgaps that lowered the picture, and since fixes 13, 17 and 18 with `DM_NVN_CUT=8`, split screen holds in console mode without them.
@@ -66,8 +66,8 @@ use them: the pad and handheld mode for a split screen were stopgaps that lowere
 | #2408 | Sennbon-99 | a sparse mapping starts a new texture ID epoch only when it is new: replay thread 8 % faster |
 | #2328 | dean0396 | a pool buffer retired while a submission commits waits for that submission |
 | #2348 | PromethOps | fullscreen on a fixed 60 Hz screen (a TV) whose presents keep turning a refresh late; not measured here (no TV connected) |
-| `f9cbc09f` `a80ac555` `44255e5b` `291f9337` `44287f11` | upstream `main` after the base | two controller fixes (the controller screen reopening, a Pro Controller counted twice), a storage takeover fix, a texture layout fix, a movie texture fix |
-| #1230, `shader_border_emu 0` and `shader_nan_coord cube` (`942b8e59`; the backport adds `cube`, tested and noted in `97312730`) | IshaanKalra2103 | the last change, with every shader built again: its author's M1 Pro got the samples' overlap back (the cube prefilter 2.2 → 0.7 ms a chain); on this M2 Pro the cube and cube-array filters took 3 to 9 % less in a Metal harness, and in play the GPU's time a frame within run-to-run noise (one player 13.38 → 13.28 and 13.71 ms, two 14.15 → 14.07, four 28.93 → 28.41; one run each, two with one player), no frame off its step with two and four players before or after, and no fault in the pictures. `cube` changes only the cube and cube-array guards, so `dmsh_fetch.fold` keeps the 2D ones' readable-tile versions |
+| `dd3c9a2a` `718fb41c` `8fa8a3a2` `6e86b76d` `9b984c00` | upstream `main` after the base | two controller fixes (the controller screen reopening, a Pro Controller counted twice), a storage takeover fix, a texture layout fix, a movie texture fix |
+| #1230, `shader_border_emu 0` and `shader_nan_coord cube` (`67891c3c`; the backport adds `cube`, tested and noted in `9ade128b`) | IshaanKalra2103 | the last change, with every shader built again: its author's M1 Pro got the samples' overlap back (the cube prefilter 2.2 → 0.7 ms a chain); on this M2 Pro the cube and cube-array filters took 3 to 9 % less in a Metal harness, and in play the GPU's time a frame within run-to-run noise (one player 13.38 → 13.28 and 13.71 ms, two 14.15 → 14.07, four 28.93 → 28.41; one run each, two with one player), no frame off its step with two and four players before or after, and no fault in the pictures. `cube` changes only the cube and cube-array guards, so `dmsh_fetch.fold` keeps the 2D ones' readable-tile versions |
 
 Data: the warm-up list, 15,062 rows merged from 10 lists of 6 repositories (`mkw/pso/README.md`).
 
