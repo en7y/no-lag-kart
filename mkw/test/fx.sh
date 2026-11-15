@@ -4,7 +4,7 @@
 #   route  1 = gp-start-150 (one player), 2 / 3 / 4 = gp150-<n>p (split screen), or a route's name; players 2 to 4 come from mkw/test/routes/<route>.ctl when it exists
 #   host   gm (the packed host in a bundle that allows Game Mode), nogm (the same host in a bundle that does not), gm-<variant> (a host of mkw/test/host.py in a
 #          Game Mode bundle), or the absolute path of a host inside an app bundle (<bundle>/Contents/MacOS/dmhost)
-# The bundles are made under <build>/gm (mkw/test/mkbundle.sh), again when their host is newer. The settings of mkw/env-m2pro-16gb.txt go to every run (mkw/test/bench.sh).
+# The bundles are made under <build>/gm (mkw/test/mkbundle.sh), again when their host is newer. The settings of mkw/env-tested.txt go to every run (mkw/test/bench.sh).
 # FX_ENV=KEY=VAL gives every run one more setting, for a value with a comma in it (DM_NVN_FS_SPLIT's list).
 # After each run the lines of macOS's Game Mode daemon go to stdout. Read a run with fxsum.py, odd.py and lates.py, a whole Grand Prix with soaksum.py. For a
 # long run add MKW_NO_TSV=1 (host_open.py: no per-frame rows, whose writes hold frames of their own) and read its long frames with longlog.py.

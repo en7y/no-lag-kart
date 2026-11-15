@@ -5,13 +5,13 @@
 # Examples (a host per variant comes from mkw/test/host.py, which prints its --variant):
 #   mkw/test/bench.sh --variant 'fixes:' --variant 'upstream:host=<build>/variants/upstream/dmhost'
 #   mkw/test/bench.sh --variant 'hold:' --variant 'nohold:DM_FPS_HOLD=off'
-# The settings of mkw/env-m2pro-16gb.txt go to every variant (BENCH_ENV names another file; BENCH_ENV= for none). Results: <build>/bench/<time>/results.md
+# The settings of mkw/env-tested.txt go to every variant (BENCH_ENV names another file; BENCH_ENV= for none). Results: <build>/bench/<time>/results.md
 set -eu
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 DUMP="${MKW_DUMP:-$ROOT/../MarioKartWorld}"
 BUILD="${MKW_BUILD:-$DUMP/0400C3F00006E000_build}"
 PY="${MKW_PYTHON:-$HOME/nup/.venv/bin/python3}"
-ENVF="${BENCH_ENV-$ROOT/mkw/env-m2pro-16gb.txt}"
+ENVF="${BENCH_ENV-$ROOT/mkw/env-tested.txt}"
 [ -x "$BUILD/tools/dmhost" ] || { echo "no packed game in $BUILD: run mkw/test/pack.sh first"; exit 1; }
 [ -d "$BUILD/run/save" ] || { echo "no save in $BUILD/run/save: start the game once by hand, reach the main menu, quit"; exit 1; }
 pmset -g batt | grep -q "AC Power" || echo "warning: on battery, the numbers will be lower and less steady"

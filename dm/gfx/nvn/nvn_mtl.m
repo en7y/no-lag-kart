@@ -3441,8 +3441,8 @@ static void rb_swap_rows(uint8_t *p, size_t wb, size_t rows, size_t nz, size_t r
 // a zero-copy buffer as before (counted: g_upc_full), so nothing ever waits for the GPU here. A texture over a quarter of the ring keeps its zero-copy buffer too.
 // The copy is taken when the upload is encoded, after nvn_dirty_protect: a later write by the game is caught and re-uploaded as before (the zero-copy buffer read the pages when
 // the GPU ran the upload; both give the texture as it was at the stamp or later)
-static size_t upc_size(void) { static long v = -1; if (v < 0) { const char *e = getenv("DM_NVN_UP_COPY"); v = e ? atol(e) : 0; if (v < 0) v = 0; if (v > 2048) v = 2048;
-    if (v) MLOG("upload sources: copied into a %ld MB ring (DM_NVN_UP_COPY)", v); } return (size_t)v << 20; }
+static size_t upc_size(void) { static long v = -1; if (v < 0) { const char *e = getenv("DM_NVN_UP_COPY"); v = e ? atol(e) : DM_GAME_UP_COPY; if (v < 0) v = 0; if (v > 2048) v = 2048;
+    if (v) MLOG("upload sources: copied into a %ld MB ring (%s)", v, e ? "DM_NVN_UP_COPY" : "game profile up_copy"); } return (size_t)v << 20; }
 static void upc_copy(uint8_t *dst, const uint8_t *src, size_t n) {   // a large texture's copy in parts on several cores
     if (n < (8u << 20)) { memcpy(dst, src, n); return; }
     size_t parts = 4, step = ((n + parts - 1) / parts + 16383) & ~(size_t)16383;
@@ -15654,7 +15654,7 @@ int mtl_fps_target(void) { static int env = -2; if (env == -2) { const char *e =
 // submit returns, and a game may reuse the copy's source right after. Catherine: Full Body's resource thread writes the next texture into the staging block 64 ms after the main thread
 // recorded a copy from it (main+0x305e64, frame start) and before that frame's submit had even returned: the host was building pipelines inside the submit for 300 ms, and committed the
 // copy only at its end, so the subtitle band's gradient (BC3, 32x512) came out as the next texture's blocks. Committed at the first pass boundary, the copies run while the host encodes the rest
-static int cut_draws(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_CUT"); v = e ? atoi(e) : 64; MLOG("segmented submission: a segment is submitted between passes every %d draws (DM_NVN_CUT, 0 = off)", v); } return v; }
+static int cut_draws(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_CUT"); v = e ? atoi(e) : DM_GAME_NVN_CUT; MLOG("segmented submission: a segment is submitted between passes every %d draws (%s, 0 = off)", v, e ? "DM_NVN_CUT" : "game profile nvn_cut"); } return v; }
 static uint64_t g_cut_draw0, g_cuts, g_copy_cuts;
 // The count starts with the submission (mtl_sub_begin). It used to start at the submission's first sub_cut, which only a render target change reaches (OP_SET_RT): the draws a
 // submission makes into the target it inherited, before its first target change, were never counted, and the first segment came that many draws late
@@ -16082,11 +16082,11 @@ static void *gpu_keep_main(void *arg) {
 }
 static void gpu_keep_start(void) {
 #if TARGET_OS_OSX
-    const char *e = getenv("DM_GPU_KEEP"); int mode = e ? atoi(e) : 2; if (e && !strcmp(e, "auto")) mode = 2;
-    if (mode <= 0) { MLOG("GPU clock keeper: off (DM_GPU_KEEP=0)"); return; }
+    const char *e = getenv("DM_GPU_KEEP"); int mode = e ? atoi(e) : DM_GAME_GPU_KEEP; if (e && !strcmp(e, "auto")) mode = 2;   // unset: the profile's gpu_keep (auto unless set)
+    if (mode <= 0) { MLOG("GPU clock keeper: off (%s)", e ? "DM_GPU_KEEP=0" : "game profile gpu_keep"); return; }
     pthread_t th; if (pthread_create(&th, NULL, gpu_keep_main, (void *)(intptr_t)mode)) { MLOG("[RED] GPU clock keeper: cannot start its thread"); return; }
     pthread_detach(th);
-    MLOG("GPU clock keeper: %s (DM_GPU_KEEP)", mode == 1 ? "full duty" : "duty set by the frames' GPU time");
+    MLOG("GPU clock keeper: %s (%s)", mode == 1 ? "full duty" : "duty set by the frames' GPU time", e ? "DM_GPU_KEEP" : "game profile gpu_keep");
 #endif
 }
 void mtl_res_snapshot(mtl_res_count *out) {
@@ -16558,12 +16558,12 @@ static id<MTL4Compiler> g_fx_comp;
 static int g_fx_mode = -1;   // 1 = metalfx, 0 = off
 static int fx_mode(void) {
     if (g_fx_mode >= 0) return g_fx_mode;
-    const char *e = getenv("DM_PRESENT_UPSCALE"); int v = 0;
+    const char *e = getenv("DM_PRESENT_UPSCALE"); int v = !strcmp(DM_GAME_PRESENT_UPSCALE, "metalfx");   // unset: the profile's present_upscale (off unless set)
     if (e && (!strcmp(e, "metalfx") || !strcmp(e, "1"))) v = 1;
     else if (e && (!strcmp(e, "off") || !strcmp(e, "0"))) v = 0;
     else if (e && *e) MLOG("[RED] DM_PRESENT_UPSCALE=%s: metalfx or off; keeping %s", e, v ? "metalfx" : "off");
     if (v && !(g_q4 && [MTLFXSpatialScalerDescriptor supportsMetal4FX:g_dev])) { MLOG("present upscaling: this GPU has no Metal 4 MetalFX spatial scaler; the present scales bilinearly"); v = 0; }
-    MLOG("present upscaling (DM_PRESENT_UPSCALE): %s", v ? "metalfx, MetalFX's spatial scaler where the picture is shown larger than the game renders it" : "off, bilinear");
+    MLOG("present upscaling (%s): %s", e && *e ? "DM_PRESENT_UPSCALE" : "game profile present_upscale", v ? "metalfx, MetalFX's spatial scaler where the picture is shown larger than the game renders it" : "off, bilinear");
     return g_fx_mode = v;
 }
 // DM_PRESENT_UPSCALE_PLAYERS=<n>: MetalFX scales the present while the game's controller applet has found at most n players, and with more the present scales bilinearly, as with

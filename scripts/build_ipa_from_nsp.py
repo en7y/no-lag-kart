@@ -1005,6 +1005,7 @@ def derive_profile(g, pdir, ver, d, mods, app=None, shader_only=False):
     # from an update-only NUP: "Ver. ?" on its title screen, though the profile registers that build as 1.2.1)
     main = d / 'ExeFS/main'; bid = build_id(main) if main.exists() else None
     known = next((b['display'] for b in g.builds().values() if bid and b.get('main') == bid and b.get('display') not in (None, '', '?')), None)
+    if not known and bid: known = dict(w.split('=', 1) for w in g.words('known_display', '') if '=' in w).get(bid)   # a build the profile names by its display version only (known_display)
     T, disp = '\t', nacp.version(d / 'control.nacp') or known or '?'
     add = pg.main_modules(d / 'ExeFS', mods) if not shader_only and (d / 'ExeFS/main').exists() else {}   # a module's slot can change between versions: what main imports and the profile's list leaves out (Absolum 1.2.1's movie module). The host loads what the row names
     mods = sorted({*mods, *add}, key=pg.load_order) if add else mods
@@ -3110,7 +3111,8 @@ def main(args=None):
         try: xcode_projects.check_bundle_id(workspace, project, bundle_id)
         except ValueError as e: raise BuildError(str(e)) from e
     # the app version is the packed game's display version: the update's control data when an update is packed (nx_extract saves it next to the RomFS), else the base game's
-    app_version = nacp.version(game / 'control.nacp') or nacp.version(base / 'control.nacp')
+    # a dump or a NUP without control data: the display version the derived profile has for its main build (the profile's build rows or known_display), else none
+    app_version = nacp.version(game / 'control.nacp') or nacp.version(base / 'control.nacp') or (disp if derived and disp not in ('', '?') else '')
     if mac_pack and not (args.out or OUT_IPA): out_ipa = work.parent / f'{mac_app_name(app_name)}{"-provisional" if shadowed else ""}.app'
     icon, stand_in = app_icon(user_icon, spare_icon, game, base)
     if (not mac or mac_pack) and getattr(args, 'in_programs', None) is None:   # an app is made, once: a program packed with the application's first (in_programs) is part of its app

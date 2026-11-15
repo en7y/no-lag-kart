@@ -94,21 +94,26 @@ each run as macOS starts an app, for fullscreen and Game Mode.
 From the worktree of `mkw-fin3`, with the dump spelled as the build folder's stamps hold it (`NxNative`; another spelling or a clone of the folder makes the
 builder pack the 22 GB RomFS image again):
 
-    ~/nup/.venv/bin/python3 scripts/build_ipa_from_nsp.py ~/Games/Switch/NxNative/MarioKartWorld --platform mac-app --allow-other-metal --progress lines --env-file "$PWD/mkw/env-m2pro-16gb.txt"
+    ~/nup/.venv/bin/python3 scripts/build_ipa_from_nsp.py ~/Games/Switch/NxNative/MarioKartWorld --platform mac-app --progress lines
 
 `GAME=<dump> mkw/build.sh` runs the same after checking the dump. A pack in which every shader changed took 18 minutes on 2026-11-14 (the shader split 3:41, the Mac shaders 7:35, the offline pipeline archive 2:30, the app and its
 signature 2:13). The app lands beside the dump. Its first start waits about three minutes before
 anything shows: macOS scans the 24 GB bundle once. The app keeps its saves, its pipeline archive and its own warm-up list in
-`~/Library/Application Support/nxnative/0400C3F00006E000/`, its log in `~/Library/Logs/nxnative/`. A file `env.txt` in the first folder overrides the settings the
-app was packed with. After a repack, `touch` the bundle folder: macOS's Game Mode daemon keeps its verdict on a bundle path until the folder changes.
+`~/Library/Application Support/nxnative/0400C3F00006E000/`, its log in `~/Library/Logs/nxnative/`. A file `env.txt` in the first folder overrides the settings window and the
+profile's defaults. After a repack, `touch` the bundle folder: macOS's Game Mode daemon keeps its verdict on a bundle path until the folder changes.
 
-## Settings the app is packed with (`env-m2pro-16gb.txt`; each line carries its reason)
+## Settings the app runs with
+
+Since 2026-11-15 these are the game profile's defaults (`dm/games/0400C3F00006E000/game.tsv`, each key with its reason), so a build needs no env file: the settings
+window shows them, Reset to tested defaults goes back to them, and the matching `DM_` variable still overrides each. `mkw/env-tested.txt` holds the same values for
+the bench. Until then they were an env file baked into the app (`env-m2pro-16gb.txt`), which the settings window showed greyed out.
 
 `DM_OPMODE=1` (console mode: the game draws for 2560x1440, with one to four players) · `DM_PRESENT_UPSCALE=metalfx` · `DM_FPS_HOLD=off` (a late frame does not
 lengthen the ones after it) · `DM_GPU_KEEP=1` (the GPU's clock stays at its top) · `DM_NVN_CUT=8` (a submission goes to the GPU in segments of 8 draws while the GPU
 waits) · `DM_NVN_UP_COPY=128` (upload sources copied into a 128 MB resident ring). In the profile: `pso_whole on`, `fs_split` for the two reflection filters (the cube
-array filter up to 64x64), `enc_thread on`, `mac_game_mode on`, and PR #1230's `shader_border_emu 0` and `shader_nan_coord cube`. Fullscreen is not among them: it is
-the player's choice in the settings window (Display mode), saved on this Mac as `defaults write org.nxnative.0400c3f00006e000 launcher.DM_FULLSCREEN -string 1`; Game Mode needs it.
+array filter up to 64x64), `enc_thread on`, `mac_game_mode on`, and PR #1230's `shader_border_emu 0` and `shader_nan_coord cube`. Fullscreen (`fullscreen on`, the settings window's Display
+mode) since 2026-11-15 as well: every run was measured in fullscreen, and Game Mode needs it. The profile keys: `op_mode console` (the default), `present_upscale metalfx`,
+`fps_hold off`, `gpu_keep full`, `nvn_cut 8`, `up_copy 128`, `fullscreen on`.
 
 ## Files here
 
@@ -118,5 +123,5 @@ clock by the second), and the readers of a run (`runsum.py`, `buckets.py`,
 `vmsum.py`, `instr.py`, `subprof_sum.py`, `sample_*.py`; KNOWLEDGE.md, section 9) · `verify_dump.py` · `build.sh` · `check_frame_fn.py` (is the frame-interval
 function's fingerprint in this build's `main`) · `bahs_probe.py` (what the shader split reads in a shader package) · `sets.tsv` and `assemble.py` (the merged pull
 request sets as data) ·
-`env-m2pro-16gb.txt` and `env-low-memory.txt` · `pads.swift` · `resolve_pr.py`, `resolve_pr1847.py`, `resolve_neo.py` (merge resolutions as code) ·
+`env-tested.txt` and `env-low-memory.txt` · `pads.swift` · `resolve_pr.py`, `resolve_pr1847.py`, `resolve_neo.py` (merge resolutions as code) ·
 `merge_pso_lists.py` and `pso/` · `pgo/` (the profile the host is built with, and what it gave) · `checks/` (the first frame-step simulations; superseded by `dm/gfx/tests/t_fstep.c`).

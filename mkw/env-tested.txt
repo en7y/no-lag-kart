@@ -1,5 +1,6 @@
-# Mario Kart World 1.8.0 on a 16 GB M2 Pro MacBook Pro (macOS 26.7): the settings this Mac was measured with (mkw/README.md).
-# Lines that start with # are comments. A file of the same form at ~/Library/Application Support/nxnative/0400C3F00006E000/env.txt overrides these.
+# Mario Kart World 1.8.0: the settings the final build was measured with (mkw/README.md). They are the game profile's defaults (dm/games/0400C3F00006E000/game.tsv),
+# so a build needs no env file; the bench (mkw/test) passes this file to every run, so each run states its settings.
+# Lines that start with # are comments. A file of the same form at ~/Library/Application Support/nxnative/0400C3F00006E000/env.txt overrides the app's settings.
 
 # Console (docked) mode for one to four players: the game draws for a 2560x1440 picture, with reflection maps of twice the size and a larger shadow map than in handheld mode.
 # Split screen stays in console mode (no DM_OPMODE_MULTI), and the game's dynamic resolution reads its frames' real GPU time (no DM_NVN_GPU_TS_PAD): no setting here

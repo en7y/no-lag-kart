@@ -318,8 +318,8 @@ The table's last column is the state of 2026-11-11; what was taken and what each
 | The maintainer's heavy-frame branch | argument tables patched instead of rebuilt, long passes cut while the GPU idles, a GPU clock keeper | [PR #1847], on Donkey Kong Bananza | variant `c1847` |
 | Passes overlap the previous one's fragments | fewer full GPU barriers between passes | [PR #1970]: Ocarina on an M1, GPU p50 39.5 → 37.2 ms | variant `c1970` |
 | Reflection (cube-map) filter shaders | three remedies, none upstream: the NaN guard written as `fmax` [PR #1230: M1 Pro 42 → 50 fps], uniform reads loaded once (switch2mac's `cb_hoist`), one cube face per draw [PR #1251] | their authors | each changes the shader chain: a full shader rebuild per try. #1230 as written would switch off upstream's readable-tile rewrite (`dmsh_fetch.py` matches the guard it rewrites): needs a port |
-| Handheld mode (`DM_OPMODE=0`) | the game renders for the console's own 1080p screen instead of a TV | [issue #1823]: 1.8.0 holds 60 on an M4 Pro | in `mkw/env-m2pro-16gb.txt` |
-| MetalFX at present (`DM_PRESENT_UPSCALE=metalfx`) | the window is scaled up by Apple's upscaler instead of a plain filter | [doc: settings.md] | in `mkw/env-m2pro-16gb.txt` |
+| Handheld mode (`DM_OPMODE=0`) | the game renders for the console's own 1080p screen instead of a TV | [issue #1823]: 1.8.0 holds 60 on an M4 Pro | in `mkw/env-tested.txt` |
+| MetalFX at present (`DM_PRESENT_UPSCALE=metalfx`) | the window is scaled up by Apple's upscaler instead of a plain filter | [doc: settings.md] | in `mkw/env-tested.txt` |
 | Encode thread (`DM_NVN_ENC_THREAD=1`) | Metal encoding on its own thread: helps when the CPU side is the limit | [doc]: a win for a game that waits on its fence every frame | to try; off by default on the Mac |
 | `DM_FPS_HOLD=off` | never hold a frame longer than the cap | [sim] | to try once, against our frame-step fix |
 | Variable rate shading | the console shades fewer pixels in places; the host ignores the calls | nobody | not built: Metal's rasterization rate maps are the tool. A project of its own |

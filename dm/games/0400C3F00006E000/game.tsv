@@ -14,10 +14,16 @@ app_category	public.app-category.racing-games
 # a gaming session: the same frame rates, GPU time within 2 %) and did not hold the GPU's clock down (docs/reference/frame-rate.md, macOS Game Mode holds the GPU at its
 # lowest clock, "Another chip"); by Apple's description it also doubles the Bluetooth sampling rate of controllers. off for a Mac where the clock falls
 mac_game_mode	on
+# The Mac window starts in fullscreen: every run of the final build was measured there (built-in screen, switched to a fixed 60 Hz), and Game Mode needs it.
+# The settings window's Display mode and DM_FULLSCREEN choose otherwise
+fullscreen	on
 pad_layout	full
 
 # ---- Versions ----
 build	v0	v0	main=9e244438c3d8ef1c703a6a85ef99c4f0	subsdk0=d39a7a3d44530bb61b35690e5b0383d5	sdk=90ebba182862b9ecdc21fcb87b999012
+# Update 1.8.0 (v917504) is packed from a profile derived from this one. A dump has no control data, so the display version comes from here: the app's version
+# and what the game's GetDisplayVersion answers (main's build ID of 1.8.0 = 1.8.0)
+known_display	d00e4f399e411d0613aa8d26b1c02fef=1.8.0
 package	v0
 shader_versions	v0
 
@@ -57,6 +63,8 @@ shader_nan_coord	cube
 fps_target	60
 # The stub hands the game at most 2, so the host's frame step holds and pays back with at most 2 as well (nvn_fstep.h step_max): at hold 3 the game ran at two thirds of its speed
 fps_step_max	2
+# A late frame does not lengthen the hold of the frames after it (the final build's setting; DM_FPS_HOLD and the launcher's Hold frames when late override it)
+fps_hold	off
 
 # ---- Graphics ----
 # agl wraps its clears in render conditions on Donkey Kong Bananza and Splatoon Raiders; the same library here, to be confirmed on this game
@@ -73,3 +81,14 @@ fs_split	765844f5609bb11b:4096 4744589bb8f9f7dd:64
 # Metal's encoding on a thread of its own: in split screen the replay thread translates up to 11,000 draws a frame, and encoding them itself was 3 ms of the 27 a frame
 # took it with four players (M2 Pro; a race with one player is unchanged). DM_NVN_ENC_THREAD and the launcher's Encode thread override it
 enc_thread	on
+# The settings the final build was measured with (2026-11-14, a 16 GB M2 Pro; mkw/README.md, mkw/TRIAGE.md), as this profile's defaults: the launcher shows them and
+# Reset to tested defaults goes back to them, and the matching DM_ variable overrides each.
+# MetalFX scales the picture up to the window or the screen (DM_PRESENT_UPSCALE); the bilinear present gave the game its GPU time back as resolution, not frames
+present_upscale	metalfx
+# The GPU clock is kept at its top (DM_GPU_KEEP): in fullscreen with Game Mode on and the keeper off it averaged 1,199 MHz of 1,398. About 4.5 W more in a race
+gpu_keep	full
+# A submission goes to the GPU in segments of 8 draws while the GPU has run out of work (DM_NVN_CUT; default 64), so the GPU starts sooner after the game submits:
+# four players, the heaviest minute, 10 and 38 frames off their step with 64, none with 8
+nvn_cut	8
+# Upload sources are copied into a 128 MB resident ring instead of buffers made resident for each upload (DM_NVN_UP_COPY): a scene cut's residency work halves
+up_copy	128

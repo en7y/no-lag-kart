@@ -37,7 +37,7 @@ LOG="$WORK/log.txt"
 export DM_ROOT="$B" DM_ROMFS="$B/extract/$VER/RomFS.img" DM_SAVE="$WORK/save" DM_TEMP="$WORK/temp" DM_MSL_DIR="$B/shader/cache" DM_FONT_DIR="$B/font"
 export DM_NVN_SHMAP="$PROF/shader_map.tsv" DM_LANG=en-US DM_WINDOW=1 DM_AUDIO=0 DM_FOCUS_KEEP=1
 export DM_PSO_MANIFEST="$LIST" DM_PSO_USER="$WORK/pso_user.tsv" DM_PSO_ARCHIVE="$WORK/pso_archive"
-while IFS= read -r l; do case "$l" in ''|\#*) ;; *) export "$l";; esac; done < "$ROOT/mkw/env-m2pro-16gb.txt"
+while IFS= read -r l; do case "$l" in ''|\#*) ;; *) export "$l";; esac; done < "$ROOT/mkw/env-tested.txt"
 for kv in "$@"; do export "$kv"; done
 T0=$(date +%s); touch "$WORK/start"
 ( cd "$WORK" && exec "$HOST" "$PATCHED" > "$LOG" 2>&1 ) & HP=$!

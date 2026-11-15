@@ -180,6 +180,16 @@ def header_one(g):
         sys.exit(f"{g.id}: pso_gpu takes 1-4 whitespace-separated GPU architectures such as 'g18p applegpu_g19p' (each an optional applegpu_ prefix then an alphanumeric token; there is no none: omit the key for g18p with pso_mtl4 on, or no archive with pso_mtl4 off): {pg}")
     et = g.get('enc_thread', 'off')   # Metal encoding on its own thread on the Mac by default (nvn_rec.h rec_on; on iOS it is on for every game; DM_NVN_ENC_THREAD overrides): on / off
     if et not in ('on', 'off'): sys.exit(f'{g.id}: enc_thread must be on or off: {et}')
+    pu = g.get('present_upscale', 'off')   # how the present scales a picture smaller than its rectangle by default (nvn_mtl.m fx_mode; DM_PRESENT_UPSCALE and the launcher's Upscaling override it): off = bilinear, metalfx = MetalFX's spatial scaler
+    if pu not in ('off', 'metalfx'): sys.exit(f'{g.id}: present_upscale must be off or metalfx: {pu}')
+    gk = g.get('gpu_keep', 'auto')   # the Mac's GPU clock keeper by default (nvn_mtl.m gpu_keep_start; DM_GPU_KEEP overrides): auto = as far as the frames' GPU time needs, full = full duty, off
+    if gk not in ('auto', 'full', 'off'): sys.exit(f'{g.id}: gpu_keep must be auto, full or off: {gk}')
+    ncu = g.get('nvn_cut', '64')   # draws between the segments a submission is committed in while the GPU waits (nvn_mtl.m cut_draws; DM_NVN_CUT overrides): 0 = one command buffer per submission
+    if not ncu.isdigit() or int(ncu) > 100000: sys.exit(f'{g.id}: nvn_cut must be a number of draws (0 = off): {ncu}')
+    upc = g.get('up_copy', '0')   # megabytes of the resident ring upload sources are copied into (nvn_mtl.m upc_size; DM_NVN_UP_COPY overrides): 0 = off, up to 2048
+    if not upc.isdigit() or int(upc) > 2048: sys.exit(f'{g.id}: up_copy must be megabytes from 0 (off) to 2048: {upc}')
+    fsc = g.get('fullscreen', 'off')   # the Mac window starts in fullscreen by default (front_mac.m; DM_FULLSCREEN and the settings window's Display mode override it): on / off
+    if fsc not in ('on', 'off'): sys.exit(f'{g.id}: fullscreen must be on or off: {fsc}')
     cp = g.get('core_preempt', 'off')   # same-core preemption approximation (hle_thread.c): on / off
     if cp not in ('on', 'off'): sys.exit(f'{g.id}: core_preempt must be on or off: {cp}')
     aba = g.get('alloc_big_align', 'off')   # nn::mem::StandardAllocator::Allocate aligns blocks of 64 KB or more to 64 KB (hle_os.c; Vanillaware's memory pool storage): on / off
@@ -258,6 +268,11 @@ def header_one(g):
          f'#define DM_GAME_PRESENT_SNAP {int(ps == "on")}',
          f'#define DM_GAME_PSO_MTL4 {int(p4 == "on")}',
          f'#define DM_GAME_ENC_THREAD {int(et == "on")}',
+         f'#define DM_GAME_PRESENT_UPSCALE {q(pu)}',
+         f'#define DM_GAME_GPU_KEEP {("off", "full", "auto").index(gk)}',   # DM_GPU_KEEP's values: 0 off, 1 full duty, 2 auto
+         f'#define DM_GAME_NVN_CUT {int(ncu)}',
+         f'#define DM_GAME_UP_COPY {int(upc)}',
+         f'#define DM_GAME_FULLSCREEN {int(fsc == "on")}',
          *([f'#define DM_GAME_SHARED_FONT_TTF {int(sf == "ttf")}'] if g.get('shared_font', '') else []),   # without the key the host decides by the SDK version (hle_sdk16.c)
          f'#define DM_GAME_PAD_LAYOUT {("simple", "full", "touch").index(pl)}',
          f'#define DM_GAME_OPMODE {int(om == "console")}',
