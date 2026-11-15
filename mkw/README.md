@@ -3,7 +3,7 @@
 Goal: update 1.8.0 (v917504) at a steady 60 fps with full-quality textures, no shader stutter, no picture faults, then 4 players on one Mac
 (30 fps is acceptable there if that is what the console does). Memory: up to about 10 GB is fine; nothing is scaled down to save memory.
 
-State (2026-11-14): the game runs as a Mac app, `<dump>/Mario Kart World.app`, packed from `mkw-fin3` at `9ade128b` (the commit after it adds only these
+State (2026-11-14): the game runs as a Mac app, `<dump>/Mario Kart World.app`, packed from `mkw-fin3` at `37b46ec3` (the commit after it adds only these
 notes). One to four players play in console (docked) mode, and no setting lowers what the game draws: the two stopgaps of 2026-11-13 (handheld mode from two
 players on, `DM_OPMODE_MULTI=0`, and the GPU-time pad `DM_NVN_GPU_TS_PAD=1.25`) are gone, and every run below was checked for their log lines. The app is marked
 for Game Mode, which macOS turns on in fullscreen. Measured on this Mac (150cc, fullscreen on the built-in screen, which the host sets to a fixed 60 Hz, Game Mode
@@ -19,9 +19,9 @@ on, sound off, players 2 to 4 scripted, one run each, two with one player):
 A frame "off its step" stayed on screen more than 4 ms longer or shorter than the game's step: what a player can see. Before, the frames came late because the
 GPU started on each frame only after the host had copied the whole of it, and split screen was more than console mode then held.
 
-What made console mode hold a split screen: the streamed submission (`6d7e5c8c`: the GPU starts on a frame 0.9 ms after the game submits it), segments of 8
-draws while the GPU waits (`DM_NVN_CUT=8`), the upload ring (`a268e4a5`) and the reflection filters' face-layered pass (`1c2abfc1`) with the cube array filter
-split up to 64x64. The per-draw feedback checks (`4fb6a185`: the replay thread 0.5 to 0.8 ms a frame less with four players), the host's profile recorded again
+What made console mode hold a split screen: the streamed submission (`8e7483df`: the GPU starts on a frame 0.9 ms after the game submits it), segments of 8
+draws while the GPU waits (`DM_NVN_CUT=8`), the upload ring (`1ec15ff8`) and the reflection filters' face-layered pass (`55fcb2cd`) with the cube array filter
+split up to 64x64. The per-draw feedback checks (`e423e749`: the replay thread 0.5 to 0.8 ms a frame less with four players), the host's profile recorded again
 on this code and PR #1230 came after. TRIAGE.md has each with its measurement.
 
 A whole Grand Prix per player count, on cups and with characters no earlier run used (2026-11-14, the host one commit before PR #1230 with these

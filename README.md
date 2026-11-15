@@ -49,7 +49,7 @@ The virtual environment keeps the packages away from Homebrew's Python, which re
 **2. Get this repository:**
 
 ```
-git clone https://github.com/mbeurms/no-lag-kart.git && cd no-lag-kart
+git clone https://github.com/kingbumi31/no-lag-kart.git && cd no-lag-kart
 ```
 
 **3. Put the game in a folder.** Update 1.8.0's RomFS is the whole patched game, so the update's folder alone is enough:

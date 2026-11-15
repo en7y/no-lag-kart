@@ -84,7 +84,7 @@ that stayed on screen more than 2 ms off its step (what a player can see).
   gave the same frame rates, GPU time within 2 % and the same replay thread clock (3.06 to 3.09 GHz) with one and four players. It does not keep the GPU's clock up:
   with the keeper off in Game Mode the clock averaged 1,199 MHz of 1,398 and the game drew about 3 % less (render targets 501 to 504 MB for 514 to 527). The packed
   app, started as a player starts it: `Found game … labelReason=infoPlist` for the launcher and for the host, `Game mode status is now on` once fullscreen.
-- **The app's host, checked** (pack #4 of 2026-11-13, `e01603f9`: the app's own binary in a test bundle, the app's settings with the two stopgaps): one player in console mode 60.0 fps
+- **The app's host, checked** (pack #4 of 2026-11-13, `eacc7cff`: the app's own binary in a test bundle, the app's settings with the two stopgaps): one player in console mode 60.0 fps
   (GPU 11.5 ms; 2 game frames of 25 ms in 35 s, none of them on screen longer than its step); two players 60.0 fps (12.4 ms, none uneven in 3,600 frames); three 30.0
   (25.4 ms, none in 1,800); four 30.0 (25.7 ms, none in 1,800). In the 20 s from the starting grid to the start signal: 4 of 1,196 with two players, none with three,
   3 of 597 with four.
@@ -98,7 +98,7 @@ that stayed on screen more than 2 ms off its step (what a player can see).
   again, with the hand-made disturbances described below set off beside it: 48 and 29, GPU p50 11.3 ms, footprint 11,720 MiB at its highest.
 - **A whole Grand Prix with four players** (`gp150-4p-full`, handheld mode after the change, Game Mode on for its 20 minutes; the host one commit before the app's):
   30 fps, the GPU's median 23.9 to 26.6 ms in every minute, 27 of 26,212 racing frames on screen longer than their step (25 within three frames of a texture upload;
-  in a window the night before: 24 of 25,593), no minute above 7, 6 frames never shown, footprint 11,722 MiB at its highest, nothing from swap. The same run on the app's own host (`e01603f9`): 42 (37 of 25,587 at the 30 fps step; 12 of them in the 9 s from
+  in a window the night before: 24 of 25,593), no minute above 7, 6 frames never shown, footprint 11,722 MiB at its highest, nothing from swap. The same run on the app's own host (`eacc7cff`): 42 (37 of 25,587 at the 30 fps step; 12 of them in the 9 s from
   561 s, game frames of 33 to 37 ms shown for 50), worst minute 16, 6 never shown, one pipeline compiled, footprint 12,001 MiB at its highest.
 - **Frames held 70 to 220 ms inside a present call: the bench's per-frame rows, not the game.** Thirteen frames in the fullscreen runs of 2026-11-12 22:33 to
   2026-11-13 04:35 in which the game had little or no work of its own, the GPU was idle and the display link ran on: 110 to 125 ms with four players (three
